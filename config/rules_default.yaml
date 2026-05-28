@@ -1,0 +1,57 @@
+rules:
+  - id: doi_format
+    name: DOI 格式校验
+    enabled: true
+    weight: 10
+  - id: doi_resolve
+    name: DOI 在 CrossRef/OpenAlex 可解析
+    enabled: true
+    weight: 20
+  - id: title_match
+    name: 标题与权威库一致
+    enabled: true
+    weight: 18
+    params: {min_similarity: 0.85}
+  - id: author_match
+    name: 作者列表一致
+    enabled: true
+    weight: 12
+    params: {min_overlap: 0.70}
+  - id: venue_match
+    name: 期刊/会议存在且一致
+    enabled: true
+    weight: 10
+  - id: year_reasonable
+    name: 年份合理
+    enabled: true
+    weight: 6
+    params: {min_year: 1900, max_year: 2026}
+  - id: page_volume_consistent
+    name: 卷/期/页一致
+    enabled: true
+    weight: 6
+  - id: arxiv_resolve
+    name: ArXiv ID 可解析
+    enabled: true
+    weight: 8
+  - id: cross_db_consistent
+    name: CrossRef × OpenAlex 一致
+    enabled: true
+    weight: 6
+  # 纯本地元数据校验（无需外部 API，对齐赛题任务二的元数据/语义一致性维度）
+  - id: author_format
+    name: 作者姓名格式合理
+    enabled: true
+    weight: 4
+  - id: venue_format
+    name: 期刊/会议名称合理
+    enabled: true
+    weight: 4
+  - id: title_quality
+    name: 标题长度与字符合理
+    enabled: true
+    weight: 4
+    params: {min_len: 6, max_len: 300}
+thresholds:
+  real: 80
+  suspicious: 40

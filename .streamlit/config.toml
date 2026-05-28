@@ -1,0 +1,31 @@
+# DataWise AI Streamlit runtime config
+# Tuned for stable local demos: large uploads, fast reruns, no file watcher
+# noise from the inotify polling that has been flaky on Windows.
+
+[server]
+# headless 设为 false：本地启动时自动弹浏览器（默认）。
+# 如需远程部署/纯 API 模式，可改为 true，并由前端手动访问 8501。
+headless = false
+runOnSave = false
+fileWatcherType = "none"
+maxUploadSize = 200
+maxMessageSize = 200
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true
+magicEnabled = true
+
+[client]
+showErrorDetails = "stacktrace"
+toolbarMode = "minimal"
+
+# NOTE: NO [theme] block. When Streamlit's config.toml has a [theme] section
+# it injects its own CSS variables (--background-color, --text-color, ...)
+# with very high specificity, fighting our runtime dark/light/blue toggle
+# in ui/theme.py. Leaving this empty lets our injected CSS fully own the
+# look-and-feel so dark mode actually goes dark everywhere.
