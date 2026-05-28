@@ -3,9 +3,9 @@
 # noise from the inotify polling that has been flaky on Windows.
 
 [server]
-# headless 设为 false：本地启动时自动弹浏览器（默认）。
-# 如需远程部署/纯 API 模式，可改为 true，并由前端手动访问 8501。
-headless = false
+# headless 设为 true：云端部署必须（否则会触发交互式邮箱提示卡住启动）。
+# 本地启动不会自动弹浏览器，手动访问 localhost:8501 即可。
+headless = true
 runOnSave = false
 fileWatcherType = "none"
 maxUploadSize = 200
