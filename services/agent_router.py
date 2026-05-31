@@ -24,6 +24,7 @@ from typing import Any
 import pandas as pd
 from PIL import Image
 
+from config.prompts import BATCH_NARRATE_PROMPT
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
 from llm.ocr_extractor import image_to_citation_text, split_citations
@@ -265,13 +266,16 @@ def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
         source_label = f"列：`{column}`"
 
     counts = result_df["verdict"].value_counts().to_dict() if "verdict" in result_df.columns else {}
-    summary = (
+    fallback = (
         f"已验证 **{len(result_df)}** 条引用（{source_label}）。\n\n"
         f"- ✅ 真实 {int(counts.get('REAL', 0))}\n"
         f"- ⚠️ 可疑 {int(counts.get('SUSPICIOUS', 0))}\n"
         f"- ❌ 虚假 {int(counts.get('FAKE', 0))}\n"
         f"- 🛑 错误 {int(counts.get('ERROR', 0))}"
     )
+    # Let DeepSeek read the real comparison results and report them in natural
+    # language; fall back to the deterministic count summary if AI is off.
+    summary = _narrate_batch_results(result_df, counts, source_label, text) or fallback
 
     return {
         "role": "assistant",
@@ -287,6 +291,73 @@ def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
             "structured_columns": structured or None,
         },
     }
+
+
+# Column names (中/英) that may carry a human-readable identifier / problem
+# description for a verified row — checked in order, first non-empty wins.
+_NAME_COLS = ("命中标题", "matched_title", "title", "标题", "题名", "题目", "citation", "引用")
+_PROBLEM_COLS = ("虚假特征", "reasons", "suggestions")
+
+
+def _narrate_batch_results(
+    result_df,
+    counts: dict[str, Any],
+    source_label: str,
+    user_text: str,
+) -> str | None:
+    """Ask DeepSeek to report the real comparison results in natural language.
+
+    Returns None when AI is unavailable so the caller keeps the deterministic
+    count summary. Only aggregate stats + the problematic rows are sent, so the
+    payload stays small even for a few-hundred-row batch.
+    """
+    if not runtime_api_key():
+        return None
+
+    name_col = next((c for c in _NAME_COLS if c in result_df.columns), None)
+    problem_col = next((c for c in _PROBLEM_COLS if c in result_df.columns), None)
+
+    problems: list[dict[str, Any]] = []
+    if "verdict" in result_df.columns:
+        flagged = result_df[result_df["verdict"].isin(["FAKE", "SUSPICIOUS", "ERROR"])]
+        for pos, (_, row) in enumerate(flagged.iterrows()):
+            if pos >= 20:  # cap payload — narrate the rest as "等若干条"
+                break
+            name = str(row.get(name_col, "") or "").strip() if name_col else ""
+            problem = str(row.get(problem_col, "") or "").strip() if problem_col else ""
+            problems.append(
+                {
+                    "条目": name[:120] or "（无标题）",
+                    "判定": row.get("verdict"),
+                    "分数": row.get("score"),
+                    "问题": problem[:200],
+                }
+            )
+
+    payload = {
+        "来源": source_label,
+        "总数": int(len(result_df)),
+        "统计": {str(k): int(v) for k, v in counts.items()},
+        "用户说明": (user_text or "").strip() or None,
+        "问题条目": problems,
+        "问题条目是否截断": bool(
+            "verdict" in result_df.columns
+            and len(result_df[result_df["verdict"].isin(["FAKE", "SUSPICIOUS", "ERROR"])]) > 20
+        ),
+    }
+    try:
+        client = DeepSeekClient(timeout=30)
+        return client.chat(
+            messages=[
+                {"role": "system", "content": BATCH_NARRATE_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+            ],
+            temperature=0.3,
+            max_tokens=1600,
+            retries=0,
+        ).strip() or None
+    except Exception:  # noqa: BLE001 - any failure → deterministic fallback
+        return None
 
 
 # --------------------------------------------------------------------- #
@@ -512,13 +583,28 @@ def _verdict_summary(report: VerificationReport) -> str:
     if cite.doi:
         bits.append(f"DOI `{cite.doi}`")
     head = " · ".join(bits) if bits else (cite.raw or "")[:80]
+
+    # DeepSeek's natural-language read of the evidence (explain_verification),
+    # so single-citation results are *told*, not just scored. reasons/summary
+    # come straight from the model; fall back gracefully when AI is off.
+    explanation = report.explanation or {}
+    ai_summary = str(explanation.get("summary") or "").strip()
+    reasons = [str(r).strip() for r in (explanation.get("reasons") or []) if str(r).strip()]
+    reasons_md = "\n".join(f"- {r}" for r in reasons[:4])
+
     suggestions = report.suggestions or []
     suggestion_md = "\n".join(f"- {s}" for s in suggestions[:4]) if suggestions else "_暂无修复建议。_"
-    return (
-        f"**{head}**\n\n"
-        f"判定 **{report.verdict}**，综合得分 **{report.overall_score}/100**。\n\n"
-        f"**修复建议**：\n{suggestion_md}"
-    )
+
+    parts = [
+        f"**{head}**",
+        f"判定 **{report.verdict}**，综合得分 **{report.overall_score}/100**。",
+    ]
+    if ai_summary:
+        parts.append(ai_summary)
+    if reasons_md:
+        parts.append(f"**关键证据**：\n{reasons_md}")
+    parts.append(f"**修复建议**：\n{suggestion_md}")
+    return "\n\n".join(parts)
 
 
 def _read_text_file(file: dict[str, Any]) -> str:
