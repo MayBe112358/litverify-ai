@@ -15,7 +15,6 @@ Composer (single component used in both states):
 from __future__ import annotations
 
 import base64
-import uuid
 from html import escape
 from typing import Any, Callable
 
@@ -24,8 +23,8 @@ import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 
-from services.agent_router import MODES, MODES_BY_ID, dispatch, report_from_dict
-from ui._scripts import DRAG_BRIDGE_SCRIPT, PLUS_POPOVER_CLOSE_SCRIPT
+from services.agent_router import MODES_BY_ID, dispatch_auto, report_from_dict
+from ui._scripts import DRAG_BRIDGE_SCRIPT
 from ui.verdict_card import render_verdict_card
 from utils.session import active_session, append_message
 
@@ -118,7 +117,6 @@ def _render_assistant(message: dict[str, Any], idx: int) -> None:
 
 
 def _render_verify_single(data: dict[str, Any], idx: int) -> None:
-    _ = idx
     payload = data.get("report")
     if not payload:
         return
@@ -141,7 +139,12 @@ def _render_verify_single(data: dict[str, Any], idx: int) -> None:
             for r in report.rule_results
         ]
         if rule_rows:
-            st.dataframe(pd.DataFrame(rule_rows), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(rule_rows),
+                use_container_width=True,
+                hide_index=True,
+                key=f"vs_rules_{idx}",
+            )
 
     evidence_payload = payload.get("evidence") or {}
     evidence_rows = []
@@ -159,7 +162,12 @@ def _render_verify_single(data: dict[str, Any], idx: int) -> None:
             )
     if evidence_rows:
         with st.expander("外部证据", expanded=False):
-            st.dataframe(pd.DataFrame(evidence_rows), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(evidence_rows),
+                use_container_width=True,
+                hide_index=True,
+                key=f"vs_evidence_{idx}",
+            )
 
 
 def _render_verify_batch(data: dict[str, Any], idx: int) -> None:
@@ -190,14 +198,14 @@ def _render_verify_batch(data: dict[str, Any], idx: int) -> None:
         with c1:
             fig = px.pie(df, names="verdict", hole=0.55, title=None)
             fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"batch_pie_{idx}")
         with c2:
             fig = px.histogram(df, x="score", color="verdict", nbins=20, title=None)
             fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"batch_hist_{idx}")
 
     with st.expander(f"详细结果（{len(df)} 行）", expanded=False):
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, use_container_width=True, hide_index=True, key=f"batch_df_{idx}")
 
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
@@ -217,10 +225,15 @@ def _render_fake_analysis(data: dict[str, Any], idx: int) -> None:
         df = pd.DataFrame([{"verdict": k, "count": v} for k, v in counts.items()])
         fig = px.bar(df, x="verdict", y="count", title=None)
         fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"fake_bar_{idx}")
     if rows:
         with st.expander(f"参与分析的样本（{len(rows)} 行）", expanded=False):
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+                key=f"fake_df_{idx}",
+            )
 
 
 def _render_ocr(data: dict[str, Any], idx: int) -> None:
@@ -298,22 +311,6 @@ def _ensure_composer_state() -> None:
     st.session_state.setdefault("home_uploader_nonce", 0)
 
 
-def _request_tools_popover_close() -> None:
-    st.session_state["_close_tools_popover"] = str(uuid.uuid4())
-
-
-def _select_pending_mode(mode_id: str) -> None:
-    st.session_state["pending_mode"] = mode_id
-    _request_tools_popover_close()
-
-
-def _maybe_close_tools_popover() -> None:
-    token = st.session_state.pop("_close_tools_popover", None)
-    if not token:
-        return
-    components.html(PLUS_POPOVER_CLOSE_SCRIPT.replace("__TOKEN__", token), height=0)
-
-
 def _clear_pending_files() -> None:
     st.session_state["pending_files"] = []
     _bump_uploaders()
@@ -388,22 +385,12 @@ def _render_home_drop_upload() -> None:
 
 
 def _render_pending_chips() -> None:
-    """Above the input: chips for selected mode + pending files."""
-    mode = st.session_state.get("pending_mode", "chat")
+    """Above the input: chips for pending file attachments."""
     files = st.session_state.get("pending_files") or []
-    if mode == "chat" and not files:
+    if not files:
         return
 
     with st.container(key="stage_row"):
-        if mode != "chat":
-            meta = MODES_BY_ID.get(mode, {})
-            _render_stage_chip(
-                key="mode",
-                label=f'{meta.get("icon", "")} {meta.get("label", mode)}',
-                variant="mode",
-                help_text="取消当前功能",
-                on_remove=lambda: st.session_state.__setitem__("pending_mode", "chat"),
-            )
         for idx, f in enumerate(files):
             filename = _compact_filename(str(f.get("name", "uploaded")))
             file_key = f"file_{idx}_{_key_part(str(f.get('name', 'uploaded')))}"
@@ -460,7 +447,12 @@ def _key_part(value: str) -> str:
 
 
 def _render_tools_popover() -> None:
-    """The + popover: file upload + 5 tool modes + reset."""
+    """The + popover: file upload only.
+
+    The agent now infers what to do from the message + file type (see
+    ``services.agent_router.dispatch_auto``), so there are no manual tool
+    chips — uploading a file is the only thing the user stages here.
+    """
     with st.popover("＋", use_container_width=False):
         st.markdown(
             """
@@ -482,31 +474,6 @@ def _render_tools_popover() -> None:
         if _stage_uploaded_files(uploaded):
             st.rerun()
 
-        for mode in MODES:
-            if mode["id"] == "chat":
-                continue  # 智能问答是默认模式，用底部"重置"切回
-            label = f"{mode['icon']}  {mode['label']}"
-            is_active = st.session_state.get("pending_mode", "chat") == mode["id"]
-            with st.container(key=f"pop_mode_item_{mode['id']}"):
-                st.markdown(
-                    (
-                        '<span class="dw-plus-mode-preview-anchor"></span>'
-                        f'<div class="dw-plus-mode-preview" aria-hidden="true">'
-                        f'<div class="dw-plus-mode-preview-title">{escape(label)}</div>'
-                        f'<div class="dw-plus-mode-preview-text">{escape(mode["hint"])}</div>'
-                        '</div>'
-                        + ('<span class="dw-mode-active-marker"></span>' if is_active else '')
-                    ),
-                    unsafe_allow_html=True,
-                )
-                st.button(
-                    label,
-                    key=f"pop_mode_{mode['id']}",
-                    use_container_width=True,
-                    on_click=_select_pending_mode,
-                    args=(mode["id"],),
-                )
-
 
 def _composer(is_empty: bool) -> None:
     """Render the composer pill: stage chips + popover trigger + chat_input.
@@ -515,7 +482,6 @@ def _composer(is_empty: bool) -> None:
     ``.st-key-composer_shell`` CSS hook — no Python branching needed.
     """
     _ensure_composer_state()
-    _maybe_close_tools_popover()
 
     shell = st.container(key="composer_shell")
     with shell:
@@ -524,10 +490,8 @@ def _composer(is_empty: bool) -> None:
         with col_plus:
             _render_tools_popover()
         with col_input:
-            mode = st.session_state.get("pending_mode", "chat")
-            placeholder = MODES_BY_ID.get(mode, MODES_BY_ID["chat"])["hint"]
             prompt = st.chat_input(
-                placeholder,
+                "粘贴一条引用、上传文献表格/截图，或直接提问…",
                 key=f"composer_input_{st.session_state.get('active_session_id', 'x')}",
             )
 
@@ -548,7 +512,6 @@ def _composer(is_empty: bool) -> None:
             f for f in _materialise_files(input_files)
             if f["name"] not in existing_names
         )
-    mode = st.session_state.get("pending_mode", "chat")
 
     if not text and not files:
         return
@@ -556,23 +519,22 @@ def _composer(is_empty: bool) -> None:
     user_msg = {
         "role": "user",
         "text": text,
-        "mode": mode,
+        # No manual mode anymore — the agent infers the action. The user
+        # bubble just shows their text + any attachments.
+        "mode": "chat",
         "files": [{"name": f["name"], "size": f["size"], "type": f.get("type", "")} for f in files],
     }
     append_message(user_msg)
 
-    with st.spinner(f"{MODES_BY_ID.get(mode, MODES_BY_ID['chat'])['icon']}  处理中…"):
+    with st.spinner("🤖  正在理解你的需求…"):
         sess = active_session()
-        assistant_msg = dispatch(
-            mode=mode,
+        assistant_msg = dispatch_auto(
             text=text,
             files=files,
             history=sess["messages"][:-1],
         )
     append_message(assistant_msg)
 
-    # After a successful send, clear staged files but KEEP the mode
-    # so the user can chain multiple verifications without re-picking.
     _clear_pending_files()
     st.rerun()
 

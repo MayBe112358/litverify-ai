@@ -95,6 +95,16 @@ class CitationVerifier:
         self.crossref = crossref or CrossRefClient()
         self.openalex = openalex or OpenAlexClient()
         self.arxiv = arxiv or ArxivClient()
+        # Read the data-source toggles HERE — __init__ runs on the main
+        # Streamlit thread, where st.session_state is reachable. The actual
+        # lookups run inside _EVIDENCE_EXECUTOR worker threads (and, for
+        # batches, a second pool on top), where st.session_state raises
+        # NoSessionContext and _session_flag would silently fall back to its
+        # default. Capturing the flags once, up front, is the only place the
+        # toggles can be honoured.
+        self.crossref_enabled = _session_flag("crossref_enabled", True)
+        self.openalex_enabled = _session_flag("openalex_enabled", True)
+        self.arxiv_enabled = _session_flag("arxiv_enabled", True)
 
     def verify(
         self,
@@ -156,7 +166,7 @@ class CitationVerifier:
         )
 
     def _crossref_lookup(self, citation):
-        if not _session_flag("crossref_enabled", True):
+        if not self.crossref_enabled:
             return None
         if citation.doi:
             # 用户已给出 DOI 是强诉求：如果该 DOI 无法在权威库解析，绝不
@@ -166,14 +176,14 @@ class CitationVerifier:
         return self.crossref.search_by_title(citation.title, citation.year)
 
     def _openalex_lookup(self, citation):
-        if not _session_flag("openalex_enabled", True):
+        if not self.openalex_enabled:
             return None
         if citation.doi:
             return self.openalex.by_doi(citation.doi)
         return self.openalex.search_by_title(citation.title, citation.year)
 
     def _arxiv_lookup(self, citation):
-        if not _session_flag("arxiv_enabled", True):
+        if not self.arxiv_enabled:
             return None
         if citation.arxiv_id:
             return self.arxiv.by_id(citation.arxiv_id)

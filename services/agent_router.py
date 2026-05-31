@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -65,6 +66,124 @@ _NO_KEY_HINT = (
 # --------------------------------------------------------------------- #
 # Public entry
 # --------------------------------------------------------------------- #
+# File extensions that mean "a table of citations" → batch verification.
+_TABLE_EXTS = (".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".json")
+
+# Text-only intents the LLM router is allowed to pick. Batch / OCR never come
+# from text — they require an uploaded table / image and are decided by file
+# type, which is unambiguous and needs no model call.
+_TEXT_INTENTS = ("verify_single", "fake_analysis", "export", "chat")
+
+
+def dispatch_auto(
+    text: str,
+    files: list[dict[str, Any]] | None = None,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Agent entry point — infer what the user wants, then run it.
+
+    Replaces the old manual tool chips: file type decides batch/OCR
+    deterministically; for plain text we ask DeepSeek to classify the
+    intent (with a heuristic fallback when the model is unavailable).
+    """
+    files = files or []
+    history = history or []
+    mode = infer_mode(text, files, history)
+    return dispatch(mode, text, files, history)
+
+
+def infer_mode(
+    text: str,
+    files: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> str:
+    """Decide which tool to run for a (text, files) input.
+
+    Files win because their type is unambiguous; only genuinely text-only
+    inputs reach the LLM intent classifier.
+    """
+    tables = [f for f in files if _has_ext(f.get("name", ""), _TABLE_EXTS)]
+    images = [f for f in files if _looks_like_image(f.get("name", ""))]
+    if tables:
+        return "verify_batch"
+    if images:
+        return "ocr"
+    # A non-table, non-image attachment (e.g. .txt/.md holding one citation)
+    # with no typed text → treat the file content as a single citation.
+    if files and not (text or "").strip():
+        return "verify_single"
+
+    intent = _classify_text_intent_llm(text, history)
+    if intent not in _TEXT_INTENTS:
+        intent = _classify_text_intent_heuristic(text)
+    return intent
+
+
+def _classify_text_intent_llm(text: str, history: list[dict[str, Any]]) -> str | None:
+    """Ask DeepSeek for a single intent label. Returns None on any failure
+    so the caller can fall back to heuristics."""
+    msg = (text or "").strip()
+    if not msg or not runtime_api_key():
+        return None
+    has_results = any(m.get("kind") in {"verify_batch", "verify_single"} for m in history)
+    system = (
+        "你是学术引用助手的意图分类器。只能输出下列标签之一，禁止任何解释或标点：\n"
+        "verify_single —— 用户给出了一条具体的文献/引用条目（含标题、作者、DOI、年份、期刊等），希望核验其真伪。\n"
+        "fake_analysis —— 用户想对已有的一批验证结果做「虚假特征/造假模式」的统计或聚类分析。\n"
+        "export —— 用户想导出或下载验证报告（HTML/PDF）。\n"
+        "chat —— 其它所有情况：提问、解释概念、对结果追问、闲聊、寒暄等。\n"
+        f"当前对话{'已有' if has_results else '尚无'}验证结果。拿不准时优先选 chat。"
+    )
+    try:
+        client = DeepSeekClient(timeout=15)
+        raw = client.chat(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": msg},
+            ],
+            temperature=0.0,
+            max_tokens=8,
+            retries=0,
+        )
+    except Exception:  # noqa: BLE001 - any failure → heuristic fallback
+        return None
+    label = (raw or "").strip().lower()
+    for intent in _TEXT_INTENTS:
+        if intent in label:
+            return intent
+    return None
+
+
+def _classify_text_intent_heuristic(text: str) -> str:
+    """Keyword/pattern fallback used when the LLM router is unavailable."""
+    from utils.doi_utils import extract_arxiv, extract_doi
+
+    msg = (text or "").strip()
+    if not msg:
+        return "chat"
+    low = msg.lower()
+    if any(k in low for k in ("导出", "下载报告", "生成报告", "export", "下载 pdf", "下载pdf")):
+        return "export"
+    if any(k in msg for k in ("虚假特征", "造假模式", "虚假模式", "造假分析", "虚假分析", "模式分析")):
+        return "fake_analysis"
+    # A concrete citation usually carries a DOI / arXiv id, or reads like a
+    # reference line (a 4-digit year + a quoted/《》 title) rather than a question.
+    is_question = msg.endswith(("?", "？")) or any(
+        low.startswith(q) for q in ("什么", "如何", "为什么", "怎么", "能不能", "可以", "how", "what", "why", "is ", "are ")
+    )
+    has_doi = bool(extract_doi(msg) or extract_arxiv(msg))
+    looks_reference = bool(re.search(r"(18|19|20)\d{2}", msg)) and (
+        '"' in msg or "《" in msg or "et al" in low or msg.count(",") >= 2
+    )
+    if has_doi or (looks_reference and not is_question):
+        return "verify_single"
+    return "chat"
+
+
+def _has_ext(name: str, exts: tuple[str, ...]) -> bool:
+    return (name or "").lower().endswith(exts)
+
+
 def dispatch(
     mode: str,
     text: str,
@@ -315,8 +434,9 @@ def _run_chat(text: str, history: list[dict[str, Any]]) -> dict[str, Any]:
             "role": "system",
             "content": (
                 "你是 LitVerify AI 的学术引用验证助手。回答要基于已给证据，"
-                "不能编造检索结果。鼓励用户在需要时切换聊天框上方的功能 chip："
-                "📋 单条验证 / 📊 批量验证 / 🔬 虚假特征 / 🖼️ 截图识别 / 📄 导出报告。"
+                "不能编造检索结果。本助手会自动识别用户意图：直接粘贴一条引用即可核验，"
+                "上传表格会自动批量核验，上传截图会自动 OCR 识别，说「导出报告」即可下载报告——"
+                "无需用户手动切换任何按钮，引导时这样自然地告诉他们即可。"
             ),
         }
     ]
