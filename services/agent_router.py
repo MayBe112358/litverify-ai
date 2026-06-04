@@ -22,12 +22,10 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from PIL import Image
 
 from config.prompts import BATCH_NARRATE_PROMPT, CHAT_SYSTEM_PROMPT
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
-from llm.ocr_extractor import image_to_citation_text, split_citations
 from services.citation_verifier import CitationVerifier
 from services.data_loader import load_dataframe
 from services.data_processor import batch_verify, batch_verify_structured
@@ -48,7 +46,7 @@ MODES: list[dict[str, str]] = [
     {"id": "fake_analysis",  "label": "虚假特征", "icon": "🔬",
      "hint": "对历史或批量结果做虚假模式聚类分析"},
     {"id": "ocr",            "label": "截图识别", "icon": "🖼️",
-     "hint": "上传文献综述截图，OCR 提取引用并核验"},
+     "hint": "截图需先转成文本；DeepSeek 只接收文本化数据"},
     {"id": "export",         "label": "导出报告", "icon": "📄",
      "hint": "把最近一批结果导出为 HTML 验证报告"},
 ]
@@ -113,6 +111,9 @@ def infer_mode(
     # with no typed text → treat the file content as a single citation.
     if files and not (text or "").strip():
         return "verify_single"
+
+    if _is_obvious_chat(text):
+        return "chat"
 
     intent = _classify_text_intent_llm(text, history)
     if intent not in _TEXT_INTENTS:
@@ -181,6 +182,28 @@ def _classify_text_intent_heuristic(text: str) -> str:
     return "chat"
 
 
+def _is_obvious_chat(text: str) -> bool:
+    """Keep natural questions out of the tool router unless they are clearly citations."""
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    low = msg.lower()
+    if re.search(r"\b(10\.\d{4,9}/[-._;()/:a-z0-9]+|arxiv:\s*\d{4}\.\d{4,5})\b", low):
+        return False
+    if re.search(r"(18|19|20)\d{2}", msg) and (
+        '"' in msg or "《" in msg or "et al" in low or msg.count(",") >= 2
+    ):
+        return False
+    if msg.endswith(("?", "？")):
+        return True
+    chat_starts = (
+        "你好", "您好", "嗨", "哈喽", "介绍", "解释", "说明", "总结", "概括",
+        "为什么", "怎么", "如何", "能不能", "可以", "帮我看看", "你觉得",
+        "what", "why", "how", "can you", "could you", "please explain",
+    )
+    return any(low.startswith(prefix) for prefix in chat_starts)
+
+
 def _has_ext(name: str, exts: tuple[str, ...]) -> bool:
     return (name or "").lower().endswith(exts)
 
@@ -210,7 +233,7 @@ def dispatch(
             return _run_ocr(text, files)
         if mode == "export":
             return _run_export(history)
-        return _run_chat(text, history)
+        return _run_chat(text, history, files)
     except Exception as exc:  # noqa: BLE001
         return _error(f"运行 `{MODES_BY_ID.get(mode, {}).get('label', mode)}` 时出错：{exc}", mode)
 
@@ -352,7 +375,8 @@ def _narrate_batch_results(
                 {"role": "system", "content": BATCH_NARRATE_PROMPT},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
             ],
-            temperature=0.3,
+            temperature=0.45,
+            top_p=0.9,
             max_tokens=1600,
             retries=0,
         ).strip() or None
@@ -404,49 +428,11 @@ def _run_fake_analysis(
 # ocr
 # --------------------------------------------------------------------- #
 def _run_ocr(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
-    if not runtime_api_key():
-        return _error(_NO_KEY_HINT.format(feature="截图识别（OCR）"), "ocr")
-    image_files = [f for f in files if _looks_like_image(f["name"])]
-    if not image_files:
-        return _error("请上传一张文献综述/参考文献截图（jpg / png / webp）。", "ocr")
-
-    target = image_files[0]
-    try:
-        image = Image.open(io.BytesIO(target["bytes"]))
-    except Exception as exc:  # noqa: BLE001
-        return _error(f"无法解析图片 `{target['name']}`：{exc}", "ocr")
-
-    extracted = image_to_citation_text(image)
-    citations = split_citations(extracted)
-
-    reports: list[dict[str, Any]] = []
-    if citations:
-        verifier = CitationVerifier()
-        for line in citations[:5]:  # cap so the chat bubble stays digestible
-            try:
-                report = verifier.verify(line, with_llm_explain=False, save=True)
-                reports.append(report.to_dict())
-            except Exception as exc:  # noqa: BLE001
-                reports.append({"error": str(exc), "raw": line})
-
-    extra = (
-        f"\n\n_用户附注：{text.strip()}_" if text.strip() else ""
+    return _error(
+        "当前 DeepSeek 调用只接收文本化数据，不能直接读取截图或文件。"
+        "请先用本地 OCR 工具把截图中的参考文献转成文本，粘贴到对话框后我再核验。",
+        "ocr",
     )
-    summary = (
-        f"在 `{target['name']}` 中识别到 **{len(citations)}** 条候选引用，"
-        f"已抽样核验前 {len(reports)} 条。{extra}"
-    )
-    return {
-        "role": "assistant",
-        "kind": "ocr",
-        "mode": "ocr",
-        "text": summary,
-        "data": {
-            "raw_text": extracted,
-            "citations": citations,
-            "reports": reports,
-        },
-    }
 
 
 # --------------------------------------------------------------------- #
@@ -487,7 +473,11 @@ def _run_export(history: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------- #
 # chat
 # --------------------------------------------------------------------- #
-def _run_chat(text: str, history: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_chat(
+    text: str,
+    history: list[dict[str, Any]],
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     msg = (text or "").strip()
     if not msg:
         return _error("发点什么我才好回应你哦。", "chat")
@@ -503,6 +493,7 @@ def _run_chat(text: str, history: list[dict[str, Any]]) -> dict[str, Any]:
         "history_summary": history_summary(),
         "last_single_report": _latest_report(history),
         "last_batch": _latest_batch_context(history),
+        "uploaded_text": _attachment_text_context(files or []),
     }
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": CHAT_SYSTEM_PROMPT}
@@ -525,7 +516,7 @@ def _run_chat(text: str, history: list[dict[str, Any]]) -> dict[str, Any]:
 
     try:
         client = DeepSeekClient(timeout=30)
-        answer = client.chat(messages=messages, temperature=0.3, max_tokens=1800)
+        answer = client.chat(messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800)
     except Exception as exc:  # noqa: BLE001
         answer = (
             "AI 暂不可用，但你仍可使用「单条验证 / 批量验证」等本地能力。\n"
@@ -715,6 +706,8 @@ _DETAIL_DROP_COLS = {"reasons", "suggestions"}
 # Cap on raw rows sent to the model. The contest set is 200; group analysis is
 # always computed over *all* rows, so even a truncated detail list stays useful.
 _DETAIL_ROW_CAP = 300
+_ATTACHMENT_TEXT_EXTS = (".txt", ".md", ".csv", ".tsv", ".json", ".log")
+_ATTACHMENT_TEXT_CAP = 12000
 
 
 def _latest_batch_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -765,6 +758,53 @@ def _latest_batch_context(history: list[dict[str, Any]]) -> dict[str, Any] | Non
             "原始明细是否截断": len(rows) > _DETAIL_ROW_CAP,
         }
     return None
+
+
+def _attachment_text_context(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert readable attachments into bounded text snippets for DeepSeek.
+
+    The model never receives file objects. It only sees text that the app has
+    decoded here, plus flags telling it when content was skipped or truncated.
+    """
+    payload: list[dict[str, Any]] = []
+    remaining = _ATTACHMENT_TEXT_CAP
+    for file in files[:6]:
+        name = str(file.get("name") or "uploaded")
+        item: dict[str, Any] = {
+            "filename": name,
+            "size": file.get("size"),
+        }
+        lower = name.lower()
+        if _looks_like_image(name):
+            item["status"] = "skipped_image"
+            item["note"] = "图片未传给 DeepSeek；需要先转成文本。"
+            payload.append(item)
+            continue
+        if not lower.endswith(_ATTACHMENT_TEXT_EXTS):
+            item["status"] = "skipped_unreadable"
+            item["note"] = "该附件类型没有被解码为文本，DeepSeek 看不到其正文。"
+            payload.append(item)
+            continue
+        text = _read_text_file(file).strip()
+        if not text:
+            item["status"] = "empty_or_binary"
+            payload.append(item)
+            continue
+        if remaining <= 0:
+            item["status"] = "skipped_context_limit"
+            payload.append(item)
+            continue
+        snippet = text[:remaining]
+        remaining -= len(snippet)
+        item.update(
+            {
+                "status": "included_text",
+                "text": snippet,
+                "truncated": len(snippet) < len(text),
+            }
+        )
+        payload.append(item)
+    return payload
 
 
 def _replay_turns(

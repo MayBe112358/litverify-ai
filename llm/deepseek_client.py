@@ -1,14 +1,9 @@
 """DeepSeek client using the OpenAI-compatible API."""
 from __future__ import annotations
 
-import base64
 import time
-from io import BytesIO
 from typing import Any
 
-from PIL import Image
-
-from config.prompts import OCR_CITATION_PROMPT
 from config.settings import settings
 
 try:  # pragma: no cover - import availability depends on environment
@@ -66,6 +61,7 @@ class DeepSeekClient:
         messages: list[dict[str, Any]],
         model: str | None = None,
         temperature: float = 0.3,
+        top_p: float | None = None,
         max_tokens: int = 2048,
         retries: int = 1,
     ) -> str:
@@ -78,11 +74,16 @@ class DeepSeekClient:
         last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
+                request: dict[str, Any] = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if top_p is not None:
+                    request["top_p"] = top_p
                 response = self.client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+                    **request,
                 )
                 return response.choices[0].message.content or ""
             except Exception as exc:  # noqa: BLE001
@@ -91,31 +92,9 @@ class DeepSeekClient:
                     time.sleep(1.0 * (attempt + 1))
         raise RuntimeError(f"DeepSeek 调用失败：{last_error}")
 
-    @staticmethod
-    def encode_image(image: Image.Image, max_side: int = 1600) -> str:
-        """Compress and base64-encode an image."""
-        w, h = image.size
-        scale = min(1.0, max_side / max(w, h))
-        if scale < 1.0:
-            image = image.resize((int(w * scale), int(h * scale)))
-        buffer = BytesIO()
-        image.convert("RGB").save(buffer, format="JPEG", quality=85)
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-    def vision_extract_table(self, image: Image.Image, prompt: str | None = None) -> str:
-        """Ask DeepSeek-VL to extract text from an image.
-
-        The method name is kept for compatibility with the original base,
-        while LitVerify passes citation-specific prompts by default.
-        """
-        b64 = self.encode_image(image)
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    {"type": "text", "text": prompt or OCR_CITATION_PROMPT},
-                ],
-            }
-        ]
-        return self.chat(messages=messages, model=runtime_vl_model(), temperature=0.1, max_tokens=4096)
+    def vision_extract_table(self, *_args: Any, **_kwargs: Any) -> str:
+        """DeepSeek is only given text/JSON context in this app."""
+        raise RuntimeError(
+            "当前 DeepSeek 调用只接收文本化数据，不能直接读取图片或文件。"
+            "请先用本地 OCR/人工复制把截图中的引用转成文本后再发送。"
+        )
