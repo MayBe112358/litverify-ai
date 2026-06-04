@@ -815,81 +815,109 @@ html[data-dw-empty="0"]:has([data-testid="stSidebar"][aria-expanded="true"])
     width: calc(100vw - 280px) !important;
 }
 
-/* =========== "+ popover" trigger button ===========
-   The popover trigger is inside the composer shell — make it a
-   compact circular ghost button on the left of the input. */
-[class*="st-key-composer_shell"] [data-testid="stPopover"] {
-    margin: 0 !important;
-}
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button {
+/* =========== "＋" upload button (direct file picker) ===========
+   The composer's left button is an st.file_uploader (key="composer_plus")
+   restyled into a compact circular "＋". Clicking it opens the native OS
+   file dialog directly — there is no popover menu. All the uploader's
+   built-in chrome (instructions text, small text, file list) is hidden;
+   the dropzone itself becomes the round button and the "＋" glyph is drawn
+   with ::before. */
+[class*="st-key-composer_plus"] {
     width: 36px !important;
     min-width: 36px !important;
     max-width: 36px !important;
     height: 36px !important;
+    margin: 0 !important;
     padding: 0 !important;
+    overflow: visible !important;
+}
+/* Note: the dropzone IS the stFileUploader > section, so we must NOT make
+   "> section" transparent here — that selector would out-specify the round
+   button's chip background below. Only the outer wrapper + plain div are
+   flattened; the dropzone section is styled separately as the circle. */
+[class*="st-key-composer_plus"] [data-testid="stFileUploader"],
+[class*="st-key-composer_plus"] [data-testid="stFileUploader"] > div {
+    width: 36px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+}
+/* Dropzone → the round "＋" button. The selector intentionally carries both
+   the wrapper and dropzone test-ids so it out-specifies any generic
+   stFileUploader section/dropzone background rules defined elsewhere. */
+[class*="st-key-composer_plus"] [data-testid="stFileUploader"]
+    [data-testid="stFileUploaderDropzone"] {
+    position: relative !important;
+    width: 36px !important;
+    min-width: 36px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
     border-radius: 999px !important;
     background: var(--dw-chip-bg) !important;
-    color: var(--dw-text) !important;
-    border: 0 !important;
-    font-size: 1.25rem !important;
-    font-weight: 400 !important;
-    display: inline-flex !important;
+    display: flex !important;
     align-items: center !important;
     justify-content: center !important;
-    text-align: center !important;
-    line-height: 36px !important;  /* match button height for vertical glyph centering */
-    vertical-align: middle !important;
+    cursor: pointer !important;
+    transition: all var(--dw-trans);
 }
-/* Force every layer inside the + button to perfectly center the
-   glyph — Streamlit wraps button text in nested divs. We keep them
-   inline-flex centered without forcing widths (which caused the p
-   to overflow left of the button bounds). */
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button > div,
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button > span {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    line-height: 1 !important;
-    width: auto !important;
-    height: auto !important;
-}
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button p {
-    font-size: 1.25rem !important;
-    line-height: 1 !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    text-align: center !important;
-    width: auto !important;
-    height: auto !important;
-    display: inline-block !important;
-}
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button:hover {
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"]:hover {
     background: var(--dw-surface-alt) !important;
-    color: var(--dw-primary) !important;
 }
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button p {
-    color: inherit !important;
-    -webkit-text-fill-color: inherit !important;
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"]::before {
+    content: "＋";
+    color: var(--dw-text);
+    -webkit-text-fill-color: var(--dw-text);
+    font-size: 1.25rem;
+    font-weight: 400;
+    line-height: 1;
+    pointer-events: none;
 }
-/* Hide Streamlit's expand-chevron + any icon next to the "+" glyph.
-   Streamlit wraps the chevron in <div aria-hidden="true"> alongside
-   the text — if we don't hide that div, the flex wrapper stays wider
-   than the button and the "+" glyph drifts left. */
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button
-    [data-testid="stIconMaterial"],
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button svg,
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button
-    [aria-hidden="true"] {
+[class*="st-key-composer_plus"]
+    [data-testid="stFileUploaderDropzone"]:hover::before {
+    color: var(--dw-primary);
+    -webkit-text-fill-color: var(--dw-primary);
+}
+/* Hide all of the uploader's native chrome — instructions, small text,
+   the "Browse files" button label, and the uploaded-file list. The inner
+   button is stretched transparently over the circle so any click on the
+   glyph still triggers the native file dialog. */
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzoneInstructions"],
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderSmallText"],
+[class*="st-key-composer_plus"] [data-testid="stFileUploader"] small,
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderFile"] {
     display: none !important;
 }
-/* Pin the inner wrapper to the button bounds so the glyph centers */
-[class*="st-key-composer_shell"] [data-testid="stPopover"] button > div {
-    width: 36px !important;
-    max-width: 36px !important;
-    gap: 0 !important;
-    justify-content: center !important;
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"] button {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 999px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+    font-size: 0 !important;
+    cursor: pointer !important;
+}
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"] button *,
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"] button p,
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"] button span,
+[class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"] button svg {
+    color: transparent !important;
+    fill: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+    font-size: 0 !important;
 }
 /* Vertically center the entire composer row — the + popover + the
    chat-input pill must share an exact vertical midline. The row,
@@ -943,381 +971,6 @@ body > div[data-baseweb="tooltip"] > div {
     color: var(--dw-text) !important;
     -webkit-text-fill-color: var(--dw-text) !important;
     background: transparent !important;
-}
-
-/* =========== Plus popover: theme-aware Gemini-style menu =========== */
-[data-testid="stPopoverBody"],
-[data-testid="stPopoverBody"] > div,
-[data-testid="stPopoverBody"] section,
-[data-testid="stPopoverBody"] [data-testid="stVerticalBlock"] {
-    background: var(--dw-surface) !important;
-    background-color: var(--dw-surface) !important;
-    color: var(--dw-text) !important;
-}
-[data-testid="stPopoverBody"] {
-    border: 1px solid var(--dw-border) !important;
-    box-shadow: var(--dw-shadow-md) !important;
-}
-[data-testid="stPopoverBody"] *:not(button):not([data-testid="stFileUploaderDropzone"]) {
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu),
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) > div,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) section,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stVerticalBlock"] {
-    background: var(--dw-surface) !important;
-    background-color: var(--dw-surface) !important;
-    color: var(--dw-text) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) {
-    min-width: 160px !important;
-    max-width: 160px !important;
-    padding: 0 !important;
-    border: 1px solid var(--dw-border) !important;
-    border-radius: 18px !important;
-    box-shadow: var(--dw-shadow-md) !important;
-    overflow: visible !important;
-    position: relative !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) * {
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) > div,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) section,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stVerticalBlock"]:first-child {
-    border-radius: 18px !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stVerticalBlock"] {
-    gap: 0 !important;
-    overflow: visible !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stElementContainer"] {
-    margin: 0 !important;
-    padding: 0 !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stElementContainer"]:has(.dw-plus-upload-visual) {
-    height: 44px !important;
-    min-height: 44px !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stElementContainer"]:has([class*="st-key-pop_uploader_"]) {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 44px !important;
-    min-height: 44px !important;
-    z-index: 5 !important;
-    pointer-events: auto !important;
-}
-/* Upload row mirrors the mode buttons below: same 12px left padding,
-   same inline-emoji + label pattern, same font weight/size — so they
-   all line up vertically at the same x-offset. */
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-upload-visual {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 44px;
-    padding: 0 12px;
-    border-radius: 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-    line-height: 1.2;
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-upload-visual:hover {
-    background: var(--dw-surface-alt);
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-upload-icon {
-    width: 18px;
-    flex: 0 0 18px;
-    text-align: center;
-    color: var(--dw-text-soft) !important;
-    -webkit-text-fill-color: var(--dw-text-soft) !important;
-    font-size: 1rem;
-    line-height: 1;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_uploader_"] {
-    position: absolute !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100% !important;
-    height: 44px !important;
-    opacity: 0 !important;
-    z-index: 4 !important;
-    cursor: pointer !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploader"],
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploader"] > section,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploader"] > div {
-    background: transparent !important;
-    background-color: transparent !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    width: 100% !important;
-    height: 44px !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploaderDropzone"] {
-    min-height: 44px !important;
-    height: 44px !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    border: 0 !important;
-    border-radius: 10px !important;
-    background: transparent !important;
-    background-color: transparent !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: stretch !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploaderDropzone"]:hover {
-    background: var(--dw-surface-alt) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzoneInstructions"],
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploaderSmallText"],
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploader"] small,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploaderFile"] {
-    display: none !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [data-testid="stFileUploaderDropzone"] button {
-    position: relative !important;
-    width: 100% !important;
-    min-height: 44px !important;
-    justify-content: flex-start !important;
-    padding: 0 12px 0 46px !important;
-    background: transparent !important;
-    border: 0 !important;
-    border-radius: 10px !important;
-    color: transparent !important;
-    -webkit-text-fill-color: transparent !important;
-    font-size: 0 !important;
-    box-shadow: none !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button *,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button p,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button span,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button svg {
-    color: transparent !important;
-    fill: transparent !important;
-    stroke: transparent !important;
-    -webkit-text-fill-color: transparent !important;
-    font-size: 0 !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button::before {
-    content: "📎";
-    position: absolute;
-    left: 15px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--dw-text-soft);
-    -webkit-text-fill-color: var(--dw-text-soft);
-    font-size: 1.1rem;
-    line-height: 1;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [data-testid="stFileUploaderDropzone"] button::after {
-    content: "上传文件";
-    color: var(--dw-text);
-    -webkit-text-fill-color: var(--dw-text);
-    font-size: 0.95rem;
-    font-weight: 600;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-static-row,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-pop-file {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-height: 44px;
-    padding: 0 16px;
-    border-radius: 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-    line-height: 1.2;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-static-row:hover {
-    background: var(--dw-surface-alt);
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-muted-row,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-muted-row * {
-    color: var(--dw-text-soft) !important;
-    -webkit-text-fill-color: var(--dw-text-soft) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-icon {
-    width: 20px;
-    flex: 0 0 20px;
-    text-align: center;
-    color: var(--dw-text-soft) !important;
-    -webkit-text-fill-color: var(--dw-text-soft) !important;
-    font-size: 1rem;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-plus-chevron,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-pop-file-size {
-    margin-left: auto;
-    color: var(--dw-text-soft) !important;
-    -webkit-text-fill-color: var(--dw-text-soft) !important;
-    font-size: 0.88rem;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_mode_item_"],
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_mode_item_"] > div,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"] [data-testid="stVerticalBlock"] {
-    position: relative !important;
-    height: 44px !important;
-    min-height: 44px !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    overflow: visible !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"] [data-testid="stElementContainer"]:has(.dw-plus-mode-preview-anchor) {
-    position: absolute !important;
-    inset: 0 !important;
-    width: 100% !important;
-    height: 44px !important;
-    min-height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    overflow: visible !important;
-    pointer-events: none !important;
-    z-index: 20 !important;
-}
-.dw-plus-mode-preview-anchor,
-.dw-mode-active-marker {
-    display: none !important;
-}
-.dw-plus-mode-preview {
-    position: absolute !important;
-    left: calc(100% + 10px) !important;
-    top: 2px !important;
-    width: 220px !important;
-    max-width: min(220px, calc(100vw - 24px)) !important;
-    padding: 0.72rem 0.78rem !important;
-    border: 1px solid var(--dw-border) !important;
-    border-radius: 14px !important;
-    background: var(--dw-surface) !important;
-    color: var(--dw-text) !important;
-    box-shadow: var(--dw-shadow-md) !important;
-    opacity: 0 !important;
-    transform: translateX(-4px) !important;
-    transition: opacity 120ms ease, transform 120ms ease !important;
-    pointer-events: none !important;
-    z-index: 999999 !important;
-}
-.dw-plus-mode-preview-title {
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-    font-size: 0.92rem !important;
-    font-weight: 700 !important;
-    line-height: 1.2 !important;
-    margin-bottom: 0.4rem !important;
-    white-space: nowrap !important;
-}
-.dw-plus-mode-preview-text {
-    color: var(--dw-text-soft) !important;
-    -webkit-text-fill-color: var(--dw-text-soft) !important;
-    font-size: 0.8rem !important;
-    font-weight: 500 !important;
-    line-height: 1.45 !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"]:hover .dw-plus-mode-preview,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"]:focus-within .dw-plus-mode-preview {
-    opacity: 1 !important;
-    transform: translateX(0) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"]:has(.dw-mode-active-marker) button {
-    background: var(--dw-primary-soft) !important;
-    color: var(--dw-primary) !important;
-    -webkit-text-fill-color: var(--dw-primary) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu)
-    [class*="st-key-pop_mode_item_"]:has(.dw-mode-active-marker) button p {
-    color: var(--dw-primary) !important;
-    -webkit-text-fill-color: var(--dw-primary) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_mode_item_verify_single"] {
-    border-top: 1px solid var(--dw-border-strong) !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-pop-file {
-    background: var(--dw-surface-alt);
-    margin: 4px 0;
-    font-size: 0.86rem;
-    font-weight: 500;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) .dw-pop-file-size {
-    font-size: 0.72rem;
-}
-[class*="st-key-pop_mode_"] button,
-[class*="st-key-pop_clear_files"] button {
-    min-height: 44px !important;
-    height: 44px !important;
-    width: 100% !important;
-    justify-content: flex-start !important;
-    text-align: left !important;
-    padding: 0 12px !important;
-    background: transparent !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-    font-size: 0.95rem !important;
-    font-weight: 600 !important;
-}
-[class*="st-key-pop_mode_"],
-[class*="st-key-pop_clear_files"],
-[class*="st-key-pop_mode_"] > div,
-[class*="st-key-pop_clear_files"] > div,
-[class*="st-key-pop_mode_"] .stButton,
-[class*="st-key-pop_clear_files"] .stButton {
-    height: 44px !important;
-    min-height: 44px !important;
-    margin: 0 !important;
-    padding: 0 !important;
-}
-[class*="st-key-pop_mode_"] button p,
-[class*="st-key-pop_clear_files"] button p {
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-    font-size: 0.95rem !important;
-    font-weight: 600 !important;
-    margin: 0 !important;
-    text-align: left !important;
-}
-[class*="st-key-pop_mode_"] button > div,
-[class*="st-key-pop_mode_"] button > span,
-[class*="st-key-pop_clear_files"] button > div,
-[class*="st-key-pop_clear_files"] button > span {
-    width: 100% !important;
-    display: flex !important;
-    justify-content: flex-start !important;
-    align-items: center !important;
-    text-align: left !important;
-}
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_mode_"] button *,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_clear_files"] button *,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_mode_"] p,
-[data-testid="stPopoverBody"]:has(.dw-plus-menu) [class*="st-key-pop_clear_files"] p {
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
-}
-[class*="st-key-pop_mode_"] button:hover,
-[class*="st-key-pop_clear_files"] button:hover {
-    background: var(--dw-surface-alt) !important;
-    color: var(--dw-text) !important;
-    -webkit-text-fill-color: var(--dw-text) !important;
 }
 
 /* =========== Stage chips (mode/file shown above the input) =========== */

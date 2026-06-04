@@ -2,9 +2,7 @@
 
 These live here (not in ``chat_shell.py``) so the Python module stays focused
 on the Streamlit layout, and so the JS itself is easier to scan without 900
-lines of Python noise on either side. None of these scripts are dynamically
-templated except :data:`PLUS_POPOVER_CLOSE_SCRIPT` which uses a single
-``__TOKEN__`` placeholder.
+lines of Python noise on either side.
 """
 from __future__ import annotations
 
@@ -288,80 +286,6 @@ DRAG_BRIDGE_SCRIPT = """
         mutationObserver: mutationObserver,
         sidebarInterval: sidebarInterval
     };
-})();
-</script>
-"""
-
-
-PLUS_POPOVER_CLOSE_SCRIPT = """
-<script>
-(function () {
-    var doc = window.parent && window.parent.document
-        ? window.parent.document : document;
-    var host = doc.body || doc.documentElement;
-    if (!host) {
-        return;
-    }
-    var token = "__TOKEN__";
-    var script = doc.createElement("script");
-    try { script.dataset.dwCloseToolsToken = token; } catch (error) {}
-    script.textContent = "(" + function () {
-        function key(name) {
-            return new KeyboardEvent(name, {
-                key: "Escape",
-                code: "Escape",
-                keyCode: 27,
-                which: 27,
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-        }
-        function closeToolsPopover() {
-            try {
-                var body = document.querySelector('[data-testid="stPopoverBody"]');
-                if (!body) {
-                    return false;
-                }
-                if (document.activeElement && document.activeElement.blur) {
-                    document.activeElement.blur();
-                }
-                var trigger = document.querySelector('[data-testid="stPopoverButton"]')
-                    || document.querySelector('[data-testid="stPopover"] button')
-                    || document.querySelector('button[aria-haspopup="dialog"]');
-                if (trigger) {
-                    trigger.click();
-                }
-                document.dispatchEvent(key("keydown"));
-                document.dispatchEvent(key("keyup"));
-                if (document.body) {
-                    document.body.dispatchEvent(key("keydown"));
-                }
-                window.dispatchEvent(key("keydown"));
-                return true;
-            } catch (error) {}
-            return false;
-        }
-        var started = Date.now();
-        var sawBody = closeToolsPopover();
-        var emptyTicks = 0;
-        var timer = window.setInterval(function () {
-            var hadBody = closeToolsPopover();
-            if (hadBody) {
-                sawBody = true;
-                emptyTicks = 0;
-            } else if (sawBody) {
-                emptyTicks += 1;
-            }
-            if ((sawBody && emptyTicks >= 3) || Date.now() - started > 650) {
-                window.clearInterval(timer);
-            }
-        }, 90);
-    }.toString() + ")();";
-    host.appendChild(script);
-    window.setTimeout(function () {
-        try { script.remove(); } catch (error) {}
-    }, 1600);
 })();
 </script>
 """

@@ -78,17 +78,56 @@ class VerificationEvidence:
     crossref: Citation | None = None
     openalex: Citation | None = None
     arxiv: Citation | None = None
+    pubmed: Citation | None = None
+    semantic_scholar: Citation | None = None
+    dblp: Citation | None = None
+    wanfang: Citation | None = None
+    datacite: Citation | None = None
+    doidb: Citation | None = None
     lookup_failed: bool = False
 
+    def records(self) -> list[Citation]:
+        """Return all available external records in source-priority order."""
+        return [
+            record
+            for record in (
+                self.crossref,
+                self.openalex,
+                self.pubmed,
+                self.semantic_scholar,
+                self.dblp,
+                self.wanfang,
+                self.datacite,
+                self.arxiv,
+                self.doidb,
+            )
+            if record
+        ]
+
     def best_record(self) -> Citation | None:
-        """Pick the strongest available authority record."""
-        return self.crossref or self.openalex or self.arxiv
+        """Pick the strongest available authority record.
+
+        Metadata-rich records are preferred over resolver-only evidence such
+        as DOIDB, so title/author/venue rules see the best comparison target.
+        """
+        for record in self.records():
+            if record.title or record.authors or record.venue:
+                return record
+        return self.records()[0] if self.records() else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "crossref": self.crossref.to_dict() if self.crossref else None,
             "openalex": self.openalex.to_dict() if self.openalex else None,
             "arxiv": self.arxiv.to_dict() if self.arxiv else None,
+            "pubmed": self.pubmed.to_dict() if self.pubmed else None,
+            "semantic_scholar": (
+                self.semantic_scholar.to_dict() if self.semantic_scholar else None
+            ),
+            "dblp": self.dblp.to_dict() if self.dblp else None,
+            "wanfang": self.wanfang.to_dict() if self.wanfang else None,
+            "datacite": self.datacite.to_dict() if self.datacite else None,
+            "doidb": self.doidb.to_dict() if self.doidb else None,
             "lookup_failed": self.lookup_failed,
         }
 
@@ -119,14 +158,14 @@ class VerificationReport:
 
 DEFAULT_RULES = [
     RuleConfig("doi_format", "DOI 格式校验", True, 10, {}),
-    RuleConfig("doi_resolve", "DOI 在 CrossRef/OpenAlex 可解析", True, 20, {}),
+    RuleConfig("doi_resolve", "DOI 在外部 DOI/学术库可解析", True, 20, {}),
     RuleConfig("title_match", "标题与权威库一致", True, 18, {"min_similarity": 0.85}),
     RuleConfig("author_match", "作者列表一致", True, 12, {"min_overlap": 0.70}),
     RuleConfig("venue_match", "期刊/会议存在且一致", True, 10, {}),
     RuleConfig("year_reasonable", "年份合理", True, 6, {"min_year": 1900, "max_year": 2026}),
     RuleConfig("page_volume_consistent", "卷/期/页一致", True, 6, {}),
     RuleConfig("arxiv_resolve", "ArXiv ID 可解析", True, 8, {}),
-    RuleConfig("cross_db_consistent", "CrossRef × OpenAlex 一致", True, 6, {}),
+    RuleConfig("cross_db_consistent", "多源外部库一致", True, 6, {}),
     # 纯本地元数据校验（无需外部 API，对齐赛题任务二的"元数据格式 / 语义一致性"维度）
     RuleConfig("author_format", "作者姓名格式合理", True, 4, {}),
     RuleConfig("venue_format", "期刊/会议名称合理", True, 4, {}),
@@ -223,7 +262,7 @@ class RuleEngine:
             return user
         target = normalize_doi(user.doi)
         record: Citation | None = None
-        for cand in (evidence.crossref, evidence.openalex):
+        for cand in evidence.records():
             if cand and cand.doi and normalize_doi(cand.doi) == target:
                 record = cand
                 break
@@ -265,15 +304,11 @@ class RuleEngine:
         if not user.doi:
             return 0.45, "未提供 DOI，降级使用标题和字段匹配。"
         normalized = normalize_doi(user.doi)
-        hits = [
-            source
-            for source in (evidence.crossref, evidence.openalex)
-            if source and normalize_doi(source.doi) == normalized
-        ]
+        hits = [source for source in evidence.records() if normalize_doi(source.doi) == normalized]
         if hits:
             names = "、".join(source.source or "权威库" for source in hits)
             return 1.0, f"DOI 可在 {names} 解析。"
-        return 0.0, "给定 DOI 未在 CrossRef/OpenAlex 命中。"
+        return 0.0, "给定 DOI 未在已启用外部 DOI/学术库命中。"
 
     @staticmethod
     def _rule_title_match(user: Citation, evidence: VerificationEvidence, params: dict[str, Any]) -> tuple[float, str]:
@@ -357,17 +392,28 @@ class RuleEngine:
     @staticmethod
     def _rule_cross_db_consistent(user: Citation, evidence: VerificationEvidence, params: dict[str, Any]) -> tuple[float, str]:
         _ = user, params
-        if not evidence.crossref and not evidence.openalex:
-            # 纯 arXiv 预印本通常不进 CrossRef/OpenAlex，不该因此被压成强负证据。
-            if evidence.arxiv:
-                return 0.7, "arXiv 预印本，CrossRef/OpenAlex 跨库比对不适用。"
-            return _no_record(evidence)[0], "CrossRef 与 OpenAlex 均未命中，缺少跨库证据。"
-        if not evidence.crossref or not evidence.openalex:
-            return 0.55, "CrossRef/OpenAlex 仅有一个命中，无法做强交叉比对。"
-        title_score = title_similarity(evidence.crossref.title, evidence.openalex.title)
-        doi_same = normalize_doi(evidence.crossref.doi) == normalize_doi(evidence.openalex.doi)
-        score = 1.0 if doi_same else title_score
-        return score, f"跨库标题相似度 {title_score:.2f}，DOI {'一致' if doi_same else '不一致'}。"
+        records = [record for record in evidence.records() if record.title or record.doi]
+        if not records:
+            return _no_record(evidence)[0], "所有已启用外部库均未命中，缺少跨库证据。"
+        if len(records) == 1:
+            record = records[0]
+            if record.source == "arXiv":
+                return 0.7, "arXiv 预印本，跨库比对证据有限。"
+            return 0.6, f"仅 {record.source or '一个外部库'} 命中，无法做强交叉比对。"
+
+        title_scores: list[float] = []
+        doi_checks: list[bool] = []
+        for i, left in enumerate(records):
+            for right in records[i + 1:]:
+                if left.title and right.title:
+                    title_scores.append(title_similarity(left.title, right.title))
+                if left.doi and right.doi:
+                    doi_checks.append(normalize_doi(left.doi) == normalize_doi(right.doi))
+        avg_title = sum(title_scores) / len(title_scores) if title_scores else 0.6
+        doi_score = 1.0 if doi_checks and all(doi_checks) else (0.6 if not doi_checks else 0.0)
+        score = max(avg_title, doi_score) if doi_checks else avg_title
+        sources = "、".join(record.source or "外部库" for record in records[:5])
+        return score, f"命中来源：{sources}；跨库标题均值 {avg_title:.2f}，DOI {'一致' if doi_score == 1.0 else '证据不足或不一致'}。"
 
     # ----- local metadata rules (no external API) ----- #
     @staticmethod

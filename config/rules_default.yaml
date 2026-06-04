@@ -4,7 +4,7 @@ rules:
     enabled: true
     weight: 10
   - id: doi_resolve
-    name: DOI 在 CrossRef/OpenAlex 可解析
+    name: DOI 在外部 DOI/学术库可解析
     enabled: true
     weight: 20
   - id: title_match
@@ -35,7 +35,7 @@ rules:
     enabled: true
     weight: 8
   - id: cross_db_consistent
-    name: CrossRef × OpenAlex 一致
+    name: 多源外部库一致
     enabled: true
     weight: 6
   # 纯本地元数据校验（无需外部 API，对齐赛题任务二的元数据/语义一致性维度）

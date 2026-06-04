@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from config.settings import settings
 from db.history import save_history
@@ -10,7 +11,11 @@ from services.api_errors import LookupUnavailable
 from services.arxiv_client import ArxivClient
 from services.citation_parser import CitationParser
 from services.crossref_client import CrossRefClient
+from services.datacite_client import DataCiteClient
+from services.dblp_client import DBLPClient
+from services.doidb_client import DOIDBClient
 from services.openalex_client import OpenAlexClient
+from services.pubmed_client import PubMedClient
 from services.rule_engine import (
     Citation,
     RuleConfig,
@@ -18,23 +23,50 @@ from services.rule_engine import (
     VerificationEvidence,
     VerificationReport,
 )
+from services.semantic_scholar_client import SemanticScholarClient
+from services.wanfang_client import WanfangClient
 
 
 # Module-level executor reused across every CitationVerifier instance and
 # every batch row — avoids the overhead of creating/destroying 3 threads
 # per evidence collection (200 rows × 3 threads previously meant 600
-# thread spin-ups). 12 workers comfortably saturate 3 parallel API
-# requests across the default 4-worker batch pool.
-_EVIDENCE_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="lv-evidence")
+# thread spin-ups). The expanded source set can issue up to 9 lookups per
+# citation, so a larger shared pool keeps batch validation from serializing.
+_EVIDENCE_EXECUTOR = ThreadPoolExecutor(max_workers=24, thread_name_prefix="lv-evidence")
 
 
-def _session_flag(key: str, default: bool = True) -> bool:
-    try:
-        import streamlit as st
+@dataclass(frozen=True)
+class SourceSpec:
+    """How one external source should be queried."""
 
-        return bool(st.session_state.get(key, default))
-    except Exception:
-        return default
+    name: str
+    client_attr: str
+    doi_lookup: bool = True
+    title_lookup: bool = True
+    fallback_after_doi_miss: bool = False
+    arxiv_id_lookup: bool = False
+    title_accepts_year: bool = True
+    skip_title_when_doi: bool = False
+
+
+_SOURCE_SPECS = (
+    SourceSpec("crossref", "crossref"),
+    SourceSpec("openalex", "openalex"),
+    SourceSpec(
+        "arxiv",
+        "arxiv",
+        doi_lookup=False,
+        arxiv_id_lookup=True,
+        title_accepts_year=False,
+        skip_title_when_doi=True,
+    ),
+    SourceSpec("pubmed", "pubmed", fallback_after_doi_miss=True),
+    SourceSpec("semantic_scholar", "semantic_scholar", fallback_after_doi_miss=True),
+    SourceSpec("dblp", "dblp", fallback_after_doi_miss=True),
+    SourceSpec("wanfang", "wanfang", fallback_after_doi_miss=True),
+    SourceSpec("datacite", "datacite"),
+    SourceSpec("doidb", "doidb", title_lookup=False),
+)
 
 
 def _session_thresholds() -> dict[str, int] | None:
@@ -86,6 +118,12 @@ class CitationVerifier:
         crossref: CrossRefClient | None = None,
         openalex: OpenAlexClient | None = None,
         arxiv: ArxivClient | None = None,
+        pubmed: PubMedClient | None = None,
+        semantic_scholar: SemanticScholarClient | None = None,
+        dblp: DBLPClient | None = None,
+        wanfang: WanfangClient | None = None,
+        datacite: DataCiteClient | None = None,
+        doidb: DOIDBClient | None = None,
     ) -> None:
         self.parser = parser or CitationParser()
         self.rule_engine = rule_engine or RuleEngine(
@@ -95,16 +133,12 @@ class CitationVerifier:
         self.crossref = crossref or CrossRefClient()
         self.openalex = openalex or OpenAlexClient()
         self.arxiv = arxiv or ArxivClient()
-        # Read the data-source toggles HERE — __init__ runs on the main
-        # Streamlit thread, where st.session_state is reachable. The actual
-        # lookups run inside _EVIDENCE_EXECUTOR worker threads (and, for
-        # batches, a second pool on top), where st.session_state raises
-        # NoSessionContext and _session_flag would silently fall back to its
-        # default. Capturing the flags once, up front, is the only place the
-        # toggles can be honoured.
-        self.crossref_enabled = _session_flag("crossref_enabled", True)
-        self.openalex_enabled = _session_flag("openalex_enabled", True)
-        self.arxiv_enabled = _session_flag("arxiv_enabled", True)
+        self.pubmed = pubmed or PubMedClient()
+        self.semantic_scholar = semantic_scholar or SemanticScholarClient()
+        self.dblp = dblp or DBLPClient()
+        self.wanfang = wanfang or WanfangClient()
+        self.datacite = datacite or DataCiteClient()
+        self.doidb = doidb or DOIDBClient()
 
     def verify(
         self,
@@ -139,59 +173,45 @@ class CitationVerifier:
         return report
 
     def _collect_evidence(self, citation: Citation) -> VerificationEvidence:
-        """Query CrossRef/OpenAlex/arXiv concurrently via the shared pool.
+        """Query every external source concurrently via the shared pool.
 
-        A :class:`LookupUnavailable` from any source flips ``lookup_failed``
-        so the rule engine stays neutral instead of treating an outage as a
-        confirmed miss.
+        Isolated source outages (for example a Semantic Scholar rate-limit)
+        should not dilute clean misses from the rest of the enabled sources.
+        ``lookup_failed`` is reserved for broad outages where unavailable
+        sources outnumber successful source attempts.
         """
         futures = {
-            "crossref": _EVIDENCE_EXECUTOR.submit(self._crossref_lookup, citation),
-            "openalex": _EVIDENCE_EXECUTOR.submit(self._openalex_lookup, citation),
-            "arxiv": _EVIDENCE_EXECUTOR.submit(self._arxiv_lookup, citation),
+            spec.name: _EVIDENCE_EXECUTOR.submit(self._lookup_source, spec, citation)
+            for spec in _SOURCE_SPECS
         }
         records: dict[str, Citation | None] = {}
-        lookup_failed = False
+        failed_count = 0
+        completed_count = 0
         for name, future in futures.items():
             try:
                 records[name] = future.result()
+                completed_count += 1
             except LookupUnavailable:
                 records[name] = None
-                lookup_failed = True
-        return VerificationEvidence(
-            crossref=records["crossref"],
-            openalex=records["openalex"],
-            arxiv=records["arxiv"],
-            lookup_failed=lookup_failed,
-        )
+                failed_count += 1
+        lookup_failed = failed_count >= 3 and failed_count > completed_count
+        return VerificationEvidence(**records, lookup_failed=lookup_failed)
 
-    def _crossref_lookup(self, citation):
-        if not self.crossref_enabled:
+    def _lookup_source(self, spec: SourceSpec, citation: Citation) -> Citation | None:
+        client = getattr(self, spec.client_attr)
+        if spec.arxiv_id_lookup and citation.arxiv_id:
+            return client.by_id(citation.arxiv_id)
+        if citation.doi and spec.skip_title_when_doi:
             return None
-        if citation.doi:
-            # 用户已给出 DOI 是强诉求：如果该 DOI 无法在权威库解析，绝不
-            # 退化到标题搜索去捡一个名字接近的论文当"弱证据"——那会把
-            # 假 DOI 的可疑度稀释掉，让 FAKE 被误判为 SUSPICIOUS。
-            return self.crossref.by_doi(citation.doi)
-        return self.crossref.search_by_title(citation.title, citation.year)
-
-    def _openalex_lookup(self, citation):
-        if not self.openalex_enabled:
+        if citation.doi and spec.doi_lookup:
+            hit = client.by_doi(citation.doi)
+            if hit or not spec.fallback_after_doi_miss:
+                return hit
+        if not spec.title_lookup:
             return None
-        if citation.doi:
-            return self.openalex.by_doi(citation.doi)
-        return self.openalex.search_by_title(citation.title, citation.year)
-
-    def _arxiv_lookup(self, citation):
-        if not self.arxiv_enabled:
-            return None
-        if citation.arxiv_id:
-            return self.arxiv.by_id(citation.arxiv_id)
-        # 没有 arXiv ID 时只用标题搜索 —— 但这里更保守：只在用户没给 DOI
-        # 时才走，避免给 DOI 的样本同时被三个来源的 fallback 命中无关篇目。
-        if citation.doi:
-            return None
-        return self.arxiv.search_by_title(citation.title)
+        if spec.title_accepts_year:
+            return client.search_by_title(citation.title, citation.year)
+        return client.search_by_title(citation.title)
 
     @staticmethod
     def _local_suggestions(report: VerificationReport) -> list[str]:

@@ -3,7 +3,6 @@
 Bundles everything that used to live as a settings expander / separate page:
 - Theme
 - DeepSeek API key + model tier
-- External source toggles (CrossRef / OpenAlex / arXiv)
 - Verdict thresholds
 - Rule weights with YAML import/export
 """
@@ -33,7 +32,7 @@ def _rule_dict(rule) -> dict:
 
 @st.dialog("设置", width="large")
 def open_settings_dialog() -> None:
-    tabs = st.tabs(["外观与模型", "数据源与阈值", "验证规则"])
+    tabs = st.tabs(["外观与模型", "阈值与接口", "验证规则"])
 
     # ----- Tab 1: appearance + model -----
     with tabs[0]:
@@ -79,15 +78,8 @@ def open_settings_dialog() -> None:
         st.session_state["deepseek_vl_model"] = chosen_model
         st.caption(f"当前调用：`{chosen_model}`")
 
-    # ----- Tab 2: data sources + thresholds -----
+    # ----- Tab 2: thresholds + interface config -----
     with tabs[1]:
-        st.caption("数据源")
-        cols = st.columns(3)
-        cols[0].toggle("CrossRef", key="crossref_enabled")
-        cols[1].toggle("OpenAlex", key="openalex_enabled")
-        cols[2].toggle("arXiv", key="arxiv_enabled")
-
-        st.divider()
         st.caption("判定阈值")
         st.slider("真实阈值", min_value=50, max_value=100, key="real_threshold")
         st.slider("可疑阈值", min_value=0, max_value=90, key="suspicious_threshold")
@@ -106,6 +98,24 @@ def open_settings_dialog() -> None:
         cols = st.columns(2)
         cols[0].text_input("CrossRef Email", value=settings.crossref_email or "—", disabled=True)
         cols[1].text_input("OpenAlex Email", value=settings.openalex_email or "—", disabled=True)
+        cols = st.columns(2)
+        cols[0].text_input(
+            "Semantic Scholar Key",
+            value="已配置" if settings.semantic_scholar_api_key else "—",
+            disabled=True,
+        )
+        cols[1].text_input(
+            "NCBI Key",
+            value="已配置" if settings.ncbi_api_key else "—",
+            disabled=True,
+        )
+        cols = st.columns(2)
+        cols[0].text_input(
+            "万方 AppKey",
+            value="已配置" if settings.wanfang_app_key else "—",
+            disabled=True,
+        )
+        cols[1].text_input("万方检索类型", value=settings.wanfang_query_type, disabled=True)
 
     # ----- Tab 3: rule editor -----
     with tabs[2]:

@@ -5,8 +5,8 @@ Layout:
 - Conversation state → message stream + composer fixed at bottom.
 
 Composer (single component used in both states):
-- Left: a "＋" popover that contains both file-upload and tool-mode
-  selection (单条/批量/虚假特征/截图/导出/重置).
+- Left: a "＋" button that opens the native file picker directly
+  (no popover menu — the agent infers the action from message + file).
 - Middle: `st.chat_input` with native Enter-to-send + multi-line.
 - Above the input row (only when something is staged): chips showing
   the currently selected mode and pending file attachments, each with
@@ -105,6 +105,18 @@ def _render_user(message: dict[str, Any]) -> None:
 # is populated at the bottom of this module once each renderer is defined.
 _KIND_RENDERERS: dict[str, Callable[[dict[str, Any], int], None]] = {}
 
+_EVIDENCE_SOURCE_LABELS = {
+    "crossref": "CrossRef",
+    "openalex": "OpenAlex",
+    "pubmed": "PubMed",
+    "semantic_scholar": "Semantic Scholar",
+    "dblp": "DBLP",
+    "wanfang": "万方",
+    "datacite": "DataCite",
+    "arxiv": "arXiv",
+    "doidb": "DOIDB",
+}
+
 
 def _render_assistant(message: dict[str, Any], idx: int) -> None:
     kind = message.get("kind", "chat")
@@ -148,12 +160,12 @@ def _render_verify_single(data: dict[str, Any], idx: int) -> None:
 
     evidence_payload = payload.get("evidence") or {}
     evidence_rows = []
-    for source in ("crossref", "openalex", "arxiv"):
+    for source, label in _EVIDENCE_SOURCE_LABELS.items():
         rec = evidence_payload.get(source) or {}
         if rec:
             evidence_rows.append(
                 {
-                    "来源": source.upper(),
+                    "来源": label,
                     "标题": rec.get("title") or "—",
                     "DOI": rec.get("doi") or "—",
                     "年份": rec.get("year") or "—",
@@ -302,7 +314,7 @@ def _render_export(data: dict[str, Any], idx: int) -> None:
 
 
 # --------------------------------------------------------------------- #
-# Composer  (+ popover  |  chat_input)
+# Composer  (＋ upload button  |  chat_input)
 # --------------------------------------------------------------------- #
 def _ensure_composer_state() -> None:
     st.session_state.setdefault("pending_mode", "chat")
@@ -446,37 +458,29 @@ def _key_part(value: str) -> str:
     return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")[:28]
 
 
-def _render_tools_popover() -> None:
-    """The + popover: file upload only.
+def _render_plus_uploader() -> None:
+    """The composer "＋" button — clicking it opens the native file picker
+    directly (no popover menu).
 
-    The agent now infers what to do from the message + file type (see
-    ``services.agent_router.dispatch_auto``), so there are no manual tool
-    chips — uploading a file is the only thing the user stages here.
+    Implemented as an ``st.file_uploader`` whose dropzone is restyled into
+    a compact circular "＋" via the ``.st-key-composer_plus`` CSS hook in
+    ``theme.css``. The agent then infers what to do from the message + the
+    uploaded file type (see ``services.agent_router.dispatch_auto``).
     """
-    with st.popover("＋", use_container_width=False):
-        st.markdown(
-            """
-            <div class="dw-plus-menu"></div>
-            <div class="dw-plus-upload-visual">
-                <span class="dw-plus-upload-icon">📎</span>
-                <span>上传文件</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        nonce = int(st.session_state.get("file_uploader_nonce", 0))
+    nonce = int(st.session_state.get("file_uploader_nonce", 0))
+    with st.container(key="composer_plus"):
         uploaded = st.file_uploader(
             "上传文件",
             accept_multiple_files=True,
-            key=f"pop_uploader_{nonce}",
+            key=f"plus_uploader_{nonce}",
             label_visibility="collapsed",
         )
-        if _stage_uploaded_files(uploaded):
-            st.rerun()
+    if _stage_uploaded_files(uploaded):
+        st.rerun()
 
 
 def _composer(is_empty: bool) -> None:
-    """Render the composer pill: stage chips + popover trigger + chat_input.
+    """Render the composer pill: stage chips + ＋ upload button + chat_input.
 
     Layout (empty vs docked) is driven by ``html[data-dw-empty]`` and the
     ``.st-key-composer_shell`` CSS hook — no Python branching needed.
@@ -488,7 +492,7 @@ def _composer(is_empty: bool) -> None:
         _render_pending_chips()
         col_plus, col_input = st.columns([0.07, 0.93], gap="small")
         with col_plus:
-            _render_tools_popover()
+            _render_plus_uploader()
         with col_input:
             prompt = st.chat_input(
                 "粘贴一条引用、上传文献表格/截图，或直接提问…",

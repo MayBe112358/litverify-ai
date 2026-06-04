@@ -1,7 +1,7 @@
 # LitVerify AI — 学术文献引用智能验证智能体
 
 针对赛题《AI 推荐的文献是真是假？》实现的文献引用验证智能体：接收一条（或一批）
-文献信息，结合**本地规则引擎**与 **CrossRef / OpenAlex / arXiv** 等免费学术 API，
+文献信息，结合**本地规则引擎**与 **CrossRef / OpenAlex / arXiv / PubMed / Semantic Scholar / DBLP / DataCite / DOIDB** 等学术 API，
 自动判定真实性、给出 0–100 可信度分数与问题明细。
 
 - **单条验证**：粘贴任意格式引用（或仅 DOI / 标题），输出 可信 / 可疑 / 虚假 判定 + 规则评分明细。
@@ -16,7 +16,7 @@
 ## 1. 环境要求
 
 - Python **3.10+**（推荐 3.12）
-- 可访问公网（调用 CrossRef / OpenAlex / arXiv）
+- 可访问公网（调用 CrossRef / OpenAlex / arXiv / PubMed / Semantic Scholar / DBLP / DataCite / DOIDB 等）
 
 ## 2. 安装
 
@@ -39,6 +39,7 @@ python -m venv .venv
 ```bash
 cp .env.example .env
 # 编辑 .env：填入 DEEPSEEK_API_KEY，以及 CROSSREF_EMAIL / OPENALEX_EMAIL（礼貌访问，建议填写）
+# 可选：SEMANTIC_SCHOLAR_API_KEY / NCBI_API_KEY / WANFANG_APP_KEY / WANFANG_APP_SECRET
 ```
 
 也可在应用内右上角「⚙ 设置」里临时填写 API Key。
@@ -108,8 +109,8 @@ tests/                # 单元 + 集成测试
 
 加权规则分三类，综合得分 ≥80 判可信、40–79 可疑、<40 虚假（阈值可在设置中调整）：
 
-- **DOI 维度**：DOI 格式正则、DOI 在 CrossRef / OpenAlex 可解析
-- **外部库比对**：标题 / 作者 / 期刊 / 卷期页一致性、arXiv 解析、CrossRef×OpenAlex 跨库一致
+- **DOI 维度**：DOI 格式正则、DOI 在 CrossRef / OpenAlex / PubMed / Semantic Scholar / DBLP / DataCite / DOIDB 等来源可解析
+- **外部库比对**：标题 / 作者 / 期刊 / 卷期页一致性、arXiv 解析、多源外部库一致性
 - **本地元数据（无需联网）**：作者姓名格式、期刊/会议名称合理性（学术关键词）、标题长度与异常字符、年份范围（1900–2026）
 
 规则权重与阈值见 `config/rules_default.yaml`，也可在应用「⚙ 设置」内调整并导入 / 导出。

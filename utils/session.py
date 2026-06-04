@@ -8,7 +8,6 @@ Shape (everything lives under ``st.session_state``)::
 
     # Legacy single-shot keys still respected by services:
     deepseek_api_key, deepseek_chat_model, deepseek_vl_model,
-    crossref_enabled, openalex_enabled, arxiv_enabled,
     real_threshold, suspicious_threshold,
     theme_name,
     last_verification_report
@@ -29,9 +28,6 @@ DEFAULTS: dict[str, Any] = {
     "deepseek_api_key": "",
     "deepseek_chat_model": "",
     "deepseek_vl_model": "",
-    "crossref_enabled": True,
-    "openalex_enabled": True,
-    "arxiv_enabled": True,
     "real_threshold": settings.real_threshold,
     "suspicious_threshold": settings.suspicious_threshold,
     "last_verification_report": None,

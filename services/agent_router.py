@@ -24,7 +24,7 @@ from typing import Any
 import pandas as pd
 from PIL import Image
 
-from config.prompts import BATCH_NARRATE_PROMPT
+from config.prompts import BATCH_NARRATE_PROMPT, CHAT_SYSTEM_PROMPT
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
 from llm.ocr_extractor import image_to_citation_text, split_citations
@@ -37,7 +37,7 @@ from services.rule_engine import VerificationReport
 from utils.dataframe import df_to_json_safe_records
 
 
-# Mode metadata — also drives ui/tools_menu.py chip list
+# Mode metadata — labels/icons shown on the user bubble + intent classifier.
 MODES: list[dict[str, str]] = [
     {"id": "chat",           "label": "智能问答", "icon": "💬",
      "hint": "围绕验证结果或学术引用自由提问"},
@@ -494,37 +494,31 @@ def _run_chat(text: str, history: list[dict[str, Any]]) -> dict[str, Any]:
     if not runtime_api_key():
         return _error(_NO_KEY_HINT.format(feature="智能问答"), "chat")
 
-    summary = history_summary()
-    last_report = _latest_report(history)
+    # Ground the model in everything we actually verified this session: the
+    # aggregate history stats, the most recent single-citation report (full
+    # rule + evidence detail), and a compact view of the most recent batch
+    # (counts + the flagged rows) so follow-ups like「第几条为什么可疑」can be
+    # answered from data instead of guesswork.
     context = {
-        "history_summary": summary,
-        "last_report": last_report,
+        "history_summary": history_summary(),
+        "last_single_report": _latest_report(history),
+        "last_batch": _latest_batch_context(history),
     }
     messages: list[dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": (
-                "你是 LitVerify AI 的学术引用验证助手。回答要基于已给证据，"
-                "不能编造检索结果。本助手会自动识别用户意图：直接粘贴一条引用即可核验，"
-                "上传表格会自动批量核验，上传截图会自动 OCR 识别，说「导出报告」即可下载报告——"
-                "无需用户手动切换任何按钮，引导时这样自然地告诉他们即可。"
-            ),
-        }
+        {"role": "system", "content": CHAT_SYSTEM_PROMPT}
     ]
-    # Replay last few assistant/user turns for grounding
-    for prior in history[-8:]:
-        if prior.get("role") not in {"user", "assistant"}:
-            continue
-        if not prior.get("text"):
-            continue
-        messages.append({"role": prior["role"], "content": prior["text"]})
+    # Replay recent turns for conversational grounding. File-only user turns
+    # (an upload with no typed text) are kept as a synthetic note so the model
+    # still knows which file was just processed.
+    messages.extend(_replay_turns(history, limit=12))
 
     messages.append(
         {
             "role": "user",
             "content": (
-                f"对话上下文 JSON：{json.dumps(context, ensure_ascii=False, default=str)}\n\n"
-                f"用户问题：{msg}"
+                f"【验证数据（仅供你引用，不要原样回显）】\n"
+                f"{json.dumps(context, ensure_ascii=False, default=str)}\n\n"
+                f"【用户问题】\n{msg}"
             ),
         }
     )
@@ -713,6 +707,88 @@ def _latest_report(history: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+# Row keys that may carry the title / verdict / score / problem of a verified
+# batch row — both the Chinese-facing columns and the machine columns are
+# covered so the chat context works regardless of which batch path produced it.
+_ROW_TITLE_KEYS = ("命中标题", "matched_title", "完整标题", "title", "标题")
+_ROW_VERDICT_KEYS = ("验证结果", "verdict")
+_ROW_SCORE_KEYS = ("可信度分数", "score")
+_ROW_PROBLEM_KEYS = ("虚假特征", "reasons", "suggestions")
+_FLAGGED_VERDICTS = {"FAKE", "SUSPICIOUS", "ERROR", "虚假", "可疑", "错误"}
+
+
+def _first_key(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for k in keys:
+        if k in row and row[k] not in (None, ""):
+            return row[k]
+    return None
+
+
+def _latest_batch_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Compact view of the most recent batch result for chat grounding.
+
+    Returns aggregate counts plus up to 15 flagged (可疑/虚假/错误) rows, each
+    trimmed to title / verdict / score / problem so a few-hundred-row batch
+    still produces a small, model-friendly payload.
+    """
+    for msg in reversed(history):
+        if msg.get("kind") != "verify_batch":
+            continue
+        data = msg.get("data") or {}
+        rows = data.get("rows") or []
+        flagged: list[dict[str, Any]] = []
+        for row in rows:
+            verdict = str(_first_key(row, _ROW_VERDICT_KEYS) or "")
+            if verdict not in _FLAGGED_VERDICTS:
+                continue
+            title = str(_first_key(row, _ROW_TITLE_KEYS) or "（无标题）")[:120]
+            problem = str(_first_key(row, _ROW_PROBLEM_KEYS) or "")[:200]
+            flagged.append(
+                {
+                    "标题": title,
+                    "判定": verdict,
+                    "分数": _first_key(row, _ROW_SCORE_KEYS),
+                    "问题": problem,
+                }
+            )
+            if len(flagged) >= 15:
+                break
+        return {
+            "文件": data.get("filename"),
+            "总数": len(rows),
+            "统计": data.get("counts") or {},
+            "可疑或虚假条目": flagged,
+            "可疑或虚假条目是否截断": len(flagged) >= 15,
+        }
+    return None
+
+
+def _replay_turns(
+    history: list[dict[str, Any]], limit: int = 12
+) -> list[dict[str, Any]]:
+    """Replay the last ``limit`` user/assistant turns as chat messages.
+
+    A user turn that only carried an upload (no typed text) is replayed as a
+    synthetic note so the model still knows a file was processed.
+    """
+    out: list[dict[str, Any]] = []
+    for prior in history[-limit:]:
+        role = prior.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = (prior.get("text") or "").strip()
+        if role == "user" and not text:
+            names = "、".join(
+                str(f.get("name", "")) for f in (prior.get("files") or []) if f.get("name")
+            )
+            if names:
+                text = f"（上传了文件：{names}）"
+        if not text:
+            continue
+        out.append({"role": role, "content": text})
+    return out
+
+
 def _looks_like_image(name: str) -> bool:
     name = (name or "").lower()
     return any(name.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"))
@@ -732,12 +808,21 @@ def report_from_dict(payload: dict[str, Any]) -> VerificationReport:
     )
     user_payload = payload.get("user_citation") or {}
     evidence_payload = payload.get("evidence") or {}
-    cite = Citation(**{k: v for k, v in user_payload.items() if k in Citation.__dataclass_fields__})
-    evidence = VerificationEvidence(
-        crossref=Citation(**evidence_payload["crossref"]) if evidence_payload.get("crossref") else None,
-        openalex=Citation(**evidence_payload["openalex"]) if evidence_payload.get("openalex") else None,
-        arxiv=Citation(**evidence_payload["arxiv"]) if evidence_payload.get("arxiv") else None,
-    )
+    citation_fields = Citation.__dataclass_fields__
+    cite = Citation(**{k: v for k, v in user_payload.items() if k in citation_fields})
+    evidence_kwargs: dict[str, Any] = {}
+    for field_name in VerificationEvidence.__dataclass_fields__:
+        if field_name == "lookup_failed":
+            evidence_kwargs[field_name] = bool(evidence_payload.get(field_name, False))
+            continue
+        record_payload = evidence_payload.get(field_name)
+        if isinstance(record_payload, dict):
+            evidence_kwargs[field_name] = Citation(
+                **{k: v for k, v in record_payload.items() if k in citation_fields}
+            )
+        else:
+            evidence_kwargs[field_name] = None
+    evidence = VerificationEvidence(**evidence_kwargs)
     rule_results = [RuleResult(**rr) for rr in payload.get("rule_results", [])]
     return VerificationReport(
         user_citation=cite,
