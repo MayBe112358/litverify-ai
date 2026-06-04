@@ -707,58 +707,62 @@ def _latest_report(history: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
-# Row keys that may carry the title / verdict / score / problem of a verified
-# batch row — both the Chinese-facing columns and the machine columns are
-# covered so the chat context works regardless of which batch path produced it.
-_ROW_TITLE_KEYS = ("命中标题", "matched_title", "完整标题", "title", "标题")
-_ROW_VERDICT_KEYS = ("验证结果", "verdict")
-_ROW_SCORE_KEYS = ("可信度分数", "score")
-_ROW_PROBLEM_KEYS = ("虚假特征", "reasons", "suggestions")
-_FLAGGED_VERDICTS = {"FAKE", "SUSPICIOUS", "ERROR", "虚假", "可疑", "错误"}
-
-
-def _first_key(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    for k in keys:
-        if k in row and row[k] not in (None, ""):
-            return row[k]
-    return None
+# Verbose / redundant row columns dropped from the chat *detail* payload to
+# keep the token budget sane. The concise 虚假特征 column already names which
+# rules failed, so the raw rule-score dump (reasons) and suggestions add bulk
+# without new signal. They are still used when computing 分组分析 below.
+_DETAIL_DROP_COLS = {"reasons", "suggestions"}
+# Cap on raw rows sent to the model. The contest set is 200; group analysis is
+# always computed over *all* rows, so even a truncated detail list stays useful.
+_DETAIL_ROW_CAP = 300
 
 
 def _latest_batch_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Compact view of the most recent batch result for chat grounding.
+    """Full grounding for chat questions about the most recent batch.
 
-    Returns aggregate counts plus up to 15 flagged (可疑/虚假/错误) rows, each
-    trimmed to title / verdict / score / problem so a few-hundred-row batch
-    still produces a small, model-friendly payload.
+    The model gets BOTH halves of what it needs to answer like it ran the
+    verification itself:
+
+    * **原始明细** — every verified row with all of its original columns
+      (生成模型 / 学术领域 / 有关主题 / 作者 / 发表年份 / DOI ...) plus the
+      verdict, score and 虚假特征. So custom asks like「按模型/学科分组统计」or
+      「第几条为什么可疑」can be answered straight from the data.
+    * **分组分析** — the pre-computed per-model / per-field / per-topic
+      fake-rate breakdown (the task-one statistics), so grouped questions are
+      answerable even when the raw detail list is truncated.
     """
     for msg in reversed(history):
         if msg.get("kind") != "verify_batch":
             continue
         data = msg.get("data") or {}
         rows = data.get("rows") or []
-        flagged: list[dict[str, Any]] = []
-        for row in rows:
-            verdict = str(_first_key(row, _ROW_VERDICT_KEYS) or "")
-            if verdict not in _FLAGGED_VERDICTS:
-                continue
-            title = str(_first_key(row, _ROW_TITLE_KEYS) or "（无标题）")[:120]
-            problem = str(_first_key(row, _ROW_PROBLEM_KEYS) or "")[:200]
-            flagged.append(
-                {
-                    "标题": title,
-                    "判定": verdict,
-                    "分数": _first_key(row, _ROW_SCORE_KEYS),
-                    "问题": problem,
+
+        analysis: dict[str, Any] | None = None
+        if rows:
+            try:
+                report = build_fake_pattern_report(pd.DataFrame(rows))
+                analysis = {
+                    "总数": report.get("total"),
+                    "高风险占比": round(float(report.get("fake_like_ratio") or 0), 4),
+                    "判定计数": report.get("verdict_counts"),
+                    "Top失效特征": report.get("top_patterns"),
+                    "分组虚假率": report.get("groups"),  # 按 模型 / 领域 / 主题
                 }
-            )
-            if len(flagged) >= 15:
-                break
+            except Exception:  # noqa: BLE001 - analysis is best-effort grounding
+                analysis = None
+
+        detail = [
+            {k: v for k, v in row.items() if k not in _DETAIL_DROP_COLS}
+            for row in rows[:_DETAIL_ROW_CAP]
+        ]
         return {
             "文件": data.get("filename"),
             "总数": len(rows),
             "统计": data.get("counts") or {},
-            "可疑或虚假条目": flagged,
-            "可疑或虚假条目是否截断": len(flagged) >= 15,
+            "可用字段": list(rows[0].keys()) if rows else [],
+            "分组分析": analysis,
+            "原始明细": detail,
+            "原始明细是否截断": len(rows) > _DETAIL_ROW_CAP,
         }
     return None
 
