@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from config.settings import settings
 
@@ -91,6 +91,47 @@ class DeepSeekClient:
                 if attempt < retries:
                     time.sleep(1.0 * (attempt + 1))
         raise RuntimeError(f"DeepSeek 调用失败：{last_error}")
+
+    def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        temperature: float = 0.3,
+        top_p: float | None = None,
+        max_tokens: int = 2048,
+    ) -> Iterator[str]:
+        """Stream a DeepSeek chat completion, yielding answer-text deltas.
+
+        Streaming is the real fix for the "Request timed out" failures: a
+        non-streaming call must produce the *entire* answer inside one timeout
+        window, but deepseek-v4-pro runs in thinking mode and can spend most of
+        that window reasoning. Streaming keeps the connection fed with chunks
+        (reasoning_content while it thinks, then content), so the per-read
+        timeout never trips and the user sees text appear as it's generated.
+
+        Only ``content`` (the final answer) is yielded — the model's
+        ``reasoning_content`` chain-of-thought is intentionally dropped so the
+        UI shows the answer, not the scratch work.
+        """
+        model_name = model or runtime_chat_model()
+        request: dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if top_p is not None:
+            request["top_p"] = top_p
+        stream = self.client.chat.completions.create(**request)
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None) if delta else None
+            if content:
+                yield content
 
     def vision_extract_table(self, *_args: Any, **_kwargs: Any) -> str:
         """DeepSeek is only given text/JSON context in this app."""

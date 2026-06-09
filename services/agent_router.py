@@ -19,7 +19,7 @@ import io
 import json
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterator
 
 import pandas as pd
 
@@ -688,36 +688,30 @@ def _run_export(history: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------- #
 # chat
 # --------------------------------------------------------------------- #
-def _run_chat(
-    text: str,
+def _build_chat_messages(
+    msg: str,
     history: list[dict[str, Any]],
-    files: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    msg = (text or "").strip()
-    if not msg:
-        return _error("发点什么我才好回应你哦。", "chat")
-    if not runtime_api_key():
-        return _error(_NO_KEY_HINT.format(feature="智能问答"), "chat")
+    files: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Assemble the chat message list — system prompt + grounding context.
 
-    # Ground the model in everything we actually verified this session: the
-    # aggregate history stats, the most recent single-citation report (full
-    # rule + evidence detail), and a compact view of the most recent batch
-    # (counts + the flagged rows) so follow-ups like「第几条为什么可疑」can be
-    # answered from data instead of guesswork.
+    Shared by the (non-streaming) ``_run_chat`` and the streaming
+    ``stream_chat`` so both feed the model identical context: aggregate history
+    stats, the most recent single-citation report (full rule + evidence
+    detail), and a compact view of the most recent batch (counts + flagged
+    rows) so follow-ups like「第几条为什么可疑」are answered from data.
+    """
     context = {
         "history_summary": history_summary(),
         "last_single_report": _latest_report(history),
         "last_batch": _latest_batch_context(history),
         "uploaded_text": _attachment_text_context(files or []),
     }
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": CHAT_SYSTEM_PROMPT}
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     # Replay recent turns for conversational grounding. File-only user turns
     # (an upload with no typed text) are kept as a synthetic note so the model
     # still knows which file was just processed.
     messages.extend(_replay_turns(history, limit=12))
-
     messages.append(
         {
             "role": "user",
@@ -728,14 +722,84 @@ def _run_chat(
             ),
         }
     )
+    return messages
 
+
+def stream_chat(
+    text: str,
+    history: list[dict[str, Any]] | None = None,
+    files: list[dict[str, Any]] | None = None,
+) -> Iterator[str]:
+    """Yield the chat answer incrementally for live (streaming) rendering.
+
+    Never raises: empty input, a missing API key and mid-stream failures are
+    all surfaced as yielded text, so the UI can render them as the assistant's
+    reply without special-casing. The concatenated text is what the caller
+    stores back into history once the stream ends.
+    """
+    history = history or []
+    msg = (text or "").strip()
+    if not msg:
+        yield "发点什么我才好回应你哦。"
+        return
+    if not runtime_api_key():
+        yield _NO_KEY_HINT.format(feature="智能问答")
+        return
+
+    messages = _build_chat_messages(msg, history, files)
     try:
-        client = DeepSeekClient(timeout=30)
-        answer = client.chat(messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800)
+        # With streaming, the timeout is a per-read budget rather than a
+        # whole-answer budget — the model's thinking phase keeps the stream fed,
+        # so the slow first token no longer trips "Request timed out".
+        client = DeepSeekClient(timeout=120)
+        produced = False
+        for delta in client.chat_stream(
+            messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800
+        ):
+            produced = True
+            yield delta
+        if not produced:
+            yield "（模型没有返回内容，请重试或换个问法。）"
     except Exception as exc:  # noqa: BLE001
+        hint = (
+            "（提示：当前用的是 deepseek-v4-pro，思考模式生成较慢；"
+            "在 ⚙ 设置里把模型切到 Flash 通常会快很多。）"
+            if "timed out" in str(exc).lower() else ""
+        )
+        yield (
+            f"\n\nAI 暂不可用，但你仍可使用「单条验证 / 批量验证」等本地能力。\n"
+            f"具体错误：`{exc}`{hint}"
+        )
+
+
+def _run_chat(
+    text: str,
+    history: list[dict[str, Any]],
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Non-streaming chat — fallback path (e.g. a caller using ``dispatch``
+    directly). The live UI streams via ``stream_chat`` instead."""
+    msg = (text or "").strip()
+    if not msg:
+        return _error("发点什么我才好回应你哦。", "chat")
+    if not runtime_api_key():
+        return _error(_NO_KEY_HINT.format(feature="智能问答"), "chat")
+
+    messages = _build_chat_messages(msg, history, files)
+    try:
+        client = DeepSeekClient(timeout=60)
+        answer = client.chat(
+            messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800, retries=0
+        )
+    except Exception as exc:  # noqa: BLE001
+        hint = (
+            "（提示：当前用的是 deepseek-v4-pro，思考模式生成较慢；"
+            "在 ⚙ 设置里把模型切到 Flash 通常会快很多。）"
+            if "timed out" in str(exc).lower() else ""
+        )
         answer = (
             "AI 暂不可用，但你仍可使用「单条验证 / 批量验证」等本地能力。\n"
-            f"具体错误：`{exc}`"
+            f"具体错误：`{exc}`{hint}"
         )
 
     return {

@@ -23,7 +23,13 @@ import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 
-from services.agent_router import MODES_BY_ID, dispatch_auto, report_from_dict
+from services.agent_router import (
+    MODES_BY_ID,
+    dispatch,
+    infer_mode,
+    report_from_dict,
+    stream_chat,
+)
 from ui._scripts import DRAG_BRIDGE_SCRIPT
 from ui.verdict_card import render_verdict_card
 from utils.session import active_session, append_message
@@ -608,13 +614,19 @@ def _composer(is_empty: bool) -> None:
     }
     append_message(user_msg)
 
+    sess = active_session()
+    history = sess["messages"][:-1]
+    # Decide the action here, where the file *bytes* are still in hand. Chat is
+    # deferred to a streaming render on the next run (so the answer types out
+    # live); every other tool keeps the spinner + full-render path.
+    mode = infer_mode(text, files, history)
+    if mode == "chat":
+        st.session_state["_pending_chat"] = {"text": text, "files": files}
+        _clear_pending_files()
+        st.rerun()
+
     with st.spinner("🤖  正在理解你的需求…"):
-        sess = active_session()
-        assistant_msg = dispatch_auto(
-            text=text,
-            files=files,
-            history=sess["messages"][:-1],
-        )
+        assistant_msg = dispatch(mode, text, files, history)
     append_message(assistant_msg)
 
     _clear_pending_files()
@@ -641,10 +653,44 @@ def render_chat_shell() -> None:
                 _render_user(msg)
             else:
                 _render_assistant(msg, idx=i)
+        # A pending chat reply streams in here — right after the last stored
+        # message, before the spacer — so it lands in the correct position.
+        _stream_pending_chat()
         # Spacer so the last message isn't hidden behind the fixed composer
         st.markdown('<div style="height:140px;"></div>', unsafe_allow_html=True)
 
     _composer(is_empty=is_empty)
+
+
+def _stream_pending_chat() -> None:
+    """Render a deferred chat reply token-by-token, then persist it.
+
+    ``_composer`` stashes ``_pending_chat`` (with the file bytes) and reruns;
+    we pick it up here, stream the answer into a live ``st.empty`` placeholder,
+    store the final text as a normal assistant message, and rerun so later
+    renders replay it from history like any other message."""
+    pending = st.session_state.pop("_pending_chat", None)
+    if not pending:
+        return
+    sess = active_session()
+    history = sess["messages"][:-1]  # exclude the user turn we're answering
+
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        placeholder.markdown("🤔 正在思考…")
+        full = ""
+        try:
+            for delta in stream_chat(pending["text"], history, pending["files"]):
+                full += delta
+                placeholder.markdown(full + " ▌")
+        except Exception as exc:  # noqa: BLE001 - backstop; stream_chat rarely raises
+            full = full or f"AI 暂不可用：`{exc}`"
+        placeholder.markdown(full or "（无回复）")
+
+    append_message(
+        {"role": "assistant", "kind": "chat", "mode": "chat", "text": full or "（无回复）", "data": {}}
+    )
+    st.rerun()
 
 
 # Register the per-kind renderers now that they're all defined above.
