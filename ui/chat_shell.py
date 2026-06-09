@@ -559,7 +559,7 @@ def _render_plus_uploader() -> None:
     Implemented as an ``st.file_uploader`` whose dropzone is restyled into
     a compact circular "＋" via the ``.st-key-composer_plus`` CSS hook in
     ``theme.css``. The agent then infers what to do from the message + the
-    uploaded file type (see ``services.agent_router.dispatch_auto``).
+    uploaded file type (see ``services.agent_router.infer_mode``).
     """
     nonce = int(st.session_state.get("file_uploader_nonce", 0))
     with st.container(key="composer_plus"):

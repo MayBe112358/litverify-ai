@@ -21,3 +21,7 @@ packaging/windows/dist/
 *.rar
 *.zip
 streamlit.stop
+
+# local streamlit run logs
+streamlit_run.log
+streamlit_run.err.log
