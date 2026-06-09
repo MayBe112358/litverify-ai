@@ -99,19 +99,20 @@ class DeepSeekClient:
         temperature: float = 0.3,
         top_p: float | None = None,
         max_tokens: int = 2048,
-    ) -> Iterator[str]:
-        """Stream a DeepSeek chat completion, yielding answer-text deltas.
+    ) -> Iterator[tuple[str, str]]:
+        """Stream a DeepSeek chat completion as ``(channel, text)`` deltas.
 
-        Streaming is the real fix for the "Request timed out" failures: a
-        non-streaming call must produce the *entire* answer inside one timeout
-        window, but deepseek-v4-pro runs in thinking mode and can spend most of
-        that window reasoning. Streaming keeps the connection fed with chunks
-        (reasoning_content while it thinks, then content), so the per-read
-        timeout never trips and the user sees text appear as it's generated.
+        ``channel`` is ``"reasoning"`` (the model's thinking, from
+        ``reasoning_content``) or ``"answer"`` (the final reply, from
+        ``content``). Both are surfaced so the UI can show live motion during
+        the long thinking phase of deepseek-v4-pro instead of a frozen
+        "thinking…" placeholder — without that, the answer only appears once
+        reasoning finishes and *looks* like a non-streamed dump.
 
-        Only ``content`` (the final answer) is yielded — the model's
-        ``reasoning_content`` chain-of-thought is intentionally dropped so the
-        UI shows the answer, not the scratch work.
+        Streaming is also what fixes the "Request timed out" failures: a
+        non-streaming call must produce the whole answer inside one timeout
+        window, but here every chunk resets the per-read budget, so the slow
+        thinking phase keeps the connection alive.
         """
         model_name = model or runtime_chat_model()
         request: dict[str, Any] = {
@@ -129,9 +130,14 @@ class DeepSeekClient:
             if not choices:
                 continue
             delta = getattr(choices[0], "delta", None)
-            content = getattr(delta, "content", None) if delta else None
+            if delta is None:
+                continue
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ("reasoning", reasoning)
+            content = getattr(delta, "content", None)
             if content:
-                yield content
+                yield ("answer", content)
 
     def vision_extract_table(self, *_args: Any, **_kwargs: Any) -> str:
         """DeepSeek is only given text/JSON context in this app."""

@@ -332,6 +332,16 @@ def _build_chart_fig(df: pd.DataFrame, spec: dict[str, Any]):
     return px.bar(plot_df, x=x, y=value_col, color=color, barmode="group", title=title)
 
 
+def _render_chat(data: dict[str, Any], idx: int) -> None:
+    """Replay a stored chat turn: the answer is already rendered from
+    ``message['text']``; here we re-attach the foldable thinking trace if the
+    streaming pass captured one."""
+    reasoning = (data or {}).get("reasoning")
+    if reasoning:
+        with st.expander("💭 思考过程", expanded=False):
+            st.markdown(reasoning)
+
+
 def _render_ocr(data: dict[str, Any], idx: int) -> None:
     raw_text = data.get("raw_text", "")
     citations = data.get("citations", []) or []
@@ -676,21 +686,52 @@ def _stream_pending_chat() -> None:
     history = sess["messages"][:-1]  # exclude the user turn we're answering
 
     with st.chat_message("assistant"):
-        placeholder = st.empty()
-        placeholder.markdown("🤔 正在思考…")
-        full = ""
+        think_box = st.empty()
+        answer_box = st.empty()
+        think_box.markdown(_thinking_html("正在思考…"), unsafe_allow_html=True)
+        reasoning, answer = "", ""
         try:
-            for delta in stream_chat(pending["text"], history, pending["files"]):
-                full += delta
-                placeholder.markdown(full + " ▌")
+            for channel, delta in stream_chat(pending["text"], history, pending["files"]):
+                if channel == "reasoning":
+                    reasoning += delta
+                    # Live, dimmed tail of the model's thinking so there's
+                    # visible motion during the (often long) reasoning phase.
+                    think_box.markdown(
+                        _thinking_html(reasoning[-280:]), unsafe_allow_html=True
+                    )
+                else:
+                    answer += delta
+                    answer_box.markdown(answer + " ▌")
         except Exception as exc:  # noqa: BLE001 - backstop; stream_chat rarely raises
-            full = full or f"AI 暂不可用：`{exc}`"
-        placeholder.markdown(full or "（无回复）")
+            answer = answer or f"AI 暂不可用：`{exc}`"
+        # Collapse the thinking trace once the answer is in; keep it foldable.
+        if reasoning:
+            think_box.empty()
+            with st.expander("💭 思考过程", expanded=False):
+                st.markdown(reasoning)
+        else:
+            think_box.empty()
+        answer_box.markdown(answer or "（无回复）")
 
     append_message(
-        {"role": "assistant", "kind": "chat", "mode": "chat", "text": full or "（无回复）", "data": {}}
+        {
+            "role": "assistant",
+            "kind": "chat",
+            "mode": "chat",
+            "text": answer or "（无回复）",
+            "data": {"reasoning": reasoning} if reasoning else {},
+        }
     )
     st.rerun()
+
+
+def _thinking_html(text: str) -> str:
+    """Dimmed, single-block 'thinking' indicator used while reasoning streams."""
+    return (
+        '<div style="opacity:0.55;font-size:0.86em;line-height:1.4;'
+        'border-left:2px solid var(--dw-border);padding-left:0.6rem;'
+        f'white-space:pre-wrap;">🤔 {escape(text)}</div>'
+    )
 
 
 # Register the per-kind renderers now that they're all defined above.
@@ -700,6 +741,7 @@ _KIND_RENDERERS.update(
         "verify_batch": _render_verify_batch,
         "fake_analysis": _render_fake_analysis,
         "chart": _render_chart,
+        "chat": _render_chat,
         "ocr": _render_ocr,
         "export": _render_export,
     }

@@ -740,21 +740,22 @@ def stream_chat(
     text: str,
     history: list[dict[str, Any]] | None = None,
     files: list[dict[str, Any]] | None = None,
-) -> Iterator[str]:
-    """Yield the chat answer incrementally for live (streaming) rendering.
+) -> Iterator[tuple[str, str]]:
+    """Yield ``(channel, text)`` deltas for live (streaming) chat rendering.
 
-    Never raises: empty input, a missing API key and mid-stream failures are
-    all surfaced as yielded text, so the UI can render them as the assistant's
-    reply without special-casing. The concatenated text is what the caller
-    stores back into history once the stream ends.
+    ``channel`` is ``"reasoning"`` or ``"answer"`` (see
+    ``DeepSeekClient.chat_stream``). Never raises: empty input, a missing API
+    key and mid-stream failures are all surfaced as ``("answer", text)`` so the
+    UI renders them as the reply without special-casing. The concatenated
+    *answer* text is what the caller stores back into history.
     """
     history = history or []
     msg = (text or "").strip()
     if not msg:
-        yield "发点什么我才好回应你哦。"
+        yield ("answer", "发点什么我才好回应你哦。")
         return
     if not runtime_api_key():
-        yield _NO_KEY_HINT.format(feature="智能问答")
+        yield ("answer", _NO_KEY_HINT.format(feature="智能问答"))
         return
 
     messages = _build_chat_messages(msg, history, files)
@@ -763,14 +764,15 @@ def stream_chat(
         # whole-answer budget — the model's thinking phase keeps the stream fed,
         # so the slow first token no longer trips "Request timed out".
         client = DeepSeekClient(timeout=120)
-        produced = False
-        for delta in client.chat_stream(
+        produced_answer = False
+        for channel, delta in client.chat_stream(
             messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800
         ):
-            produced = True
-            yield delta
-        if not produced:
-            yield "（模型没有返回内容，请重试或换个问法。）"
+            if channel == "answer":
+                produced_answer = True
+            yield (channel, delta)
+        if not produced_answer:
+            yield ("answer", "（模型没有返回内容，请重试或换个问法。）")
     except Exception as exc:  # noqa: BLE001
         hint = (
             "（提示：当前用的是 deepseek-v4-pro，思考模式生成较慢；"
@@ -778,8 +780,9 @@ def stream_chat(
             if "timed out" in str(exc).lower() else ""
         )
         yield (
+            "answer",
             f"\n\nAI 暂不可用，但你仍可使用「单条验证 / 批量验证」等本地能力。\n"
-            f"具体错误：`{exc}`{hint}"
+            f"具体错误：`{exc}`{hint}",
         )
 
 
