@@ -115,6 +115,17 @@ def infer_mode(
     if files and not (text or "").strip():
         return "verify_single"
 
+    # An explicit charting ask (柱状图/统计图表/可视化…) is a high-precision,
+    # deterministic signal — route it straight to the chart tool *before* the
+    # LLM classifier, which otherwise gets distracted by words like 报告/分析 in
+    # the same sentence and mislabels it as chat. Guarded against a pasted
+    # citation that merely happens to contain a chart-ish word.
+    if _looks_like_chart_request(text):
+        from utils.doi_utils import extract_arxiv, extract_doi
+
+        if not (extract_doi(text) or extract_arxiv(text)):
+            return "chart"
+
     if _is_obvious_chat(text):
         return "chat"
 
