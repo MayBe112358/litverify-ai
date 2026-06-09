@@ -120,11 +120,8 @@ def infer_mode(
     # LLM classifier, which otherwise gets distracted by words like 报告/分析 in
     # the same sentence and mislabels it as chat. Guarded against a pasted
     # citation that merely happens to contain a chart-ish word.
-    if _looks_like_chart_request(text):
-        from utils.doi_utils import extract_arxiv, extract_doi
-
-        if not (extract_doi(text) or extract_arxiv(text)):
-            return "chart"
+    if _looks_like_chart_request(text) and not _looks_like_reference(text):
+        return "chart"
 
     if _is_obvious_chat(text):
         return "chat"
@@ -202,11 +199,20 @@ def _classify_text_intent_heuristic(text: str) -> str:
 # Words that signal "draw me a chart" — used both by the heuristic intent
 # fallback and by ``_is_obvious_chat`` so a charting ask phrased as a question
 # ("能不能画个饼图？") still reaches the chart tool instead of plain chat.
+# Kept broad on purpose (recall matters more than precision here): a citation
+# the user wants *verified* almost never contains these, and the chart
+# short-circuit additionally guards with ``_looks_like_reference`` anyway.
 _CHART_KEYWORDS = (
-    "画图", "画个", "画一", "画张", "画成", "作图", "绘图", "绘制",
-    "图表", "可视化", "柱状图", "条形图", "饼图", "饼状", "折线",
-    "散点", "直方图", "分布图", "趋势图", "chart", "plot", "histogram",
-    "bar chart", "pie chart", "可视",
+    # draw / make verbs
+    "画图", "画个", "画一", "画张", "画成", "画出", "作图", "绘图", "绘制",
+    "出图", "出张", "成图", "看图", "用图",
+    # visualise
+    "可视化", "可视", "visualize", "visualise",
+    # chart-type nouns
+    "图表", "统计图", "图形", "柱状图", "条形图", "饼图", "饼状", "折线",
+    "散点", "直方图", "分布图", "趋势图", "占比图", "环形图",
+    # english
+    "chart", "plot", "histogram", "bar chart", "pie chart", "graph", "diagram",
 )
 
 
@@ -216,6 +222,23 @@ def _looks_like_chart_request(text: str) -> bool:
         return False
     low = msg.lower()
     return any(k in low for k in _CHART_KEYWORDS)
+
+
+def _looks_like_reference(text: str) -> bool:
+    """True when the text reads like a concrete citation to verify (a 4-digit
+    year plus reference-ish punctuation), as opposed to a request/question.
+
+    Used to keep a pasted citation that merely *mentions* a chart word
+    (e.g. a paper titled 《…图像识别…》) out of the chart tool."""
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    low = msg.lower()
+    if re.search(r"\b(10\.\d{4,9}/[-._;()/:a-z0-9]+|arxiv:\s*\d{4}\.\d{4,5})\b", low):
+        return True
+    return bool(re.search(r"(18|19|20)\d{2}", msg)) and (
+        '"' in msg or "《" in msg or "et al" in low or msg.count(",") >= 2
+    )
 
 
 def _is_obvious_chat(text: str) -> bool:
@@ -228,11 +251,7 @@ def _is_obvious_chat(text: str) -> bool:
     # classifier even when it ends with a question mark.
     if _looks_like_chart_request(msg):
         return False
-    if re.search(r"\b(10\.\d{4,9}/[-._;()/:a-z0-9]+|arxiv:\s*\d{4}\.\d{4,5})\b", low):
-        return False
-    if re.search(r"(18|19|20)\d{2}", msg) and (
-        '"' in msg or "《" in msg or "et al" in low or msg.count(",") >= 2
-    ):
+    if _looks_like_reference(msg):
         return False
     if msg.endswith(("?", "？")):
         return True
