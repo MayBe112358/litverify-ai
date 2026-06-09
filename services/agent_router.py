@@ -23,9 +23,10 @@ from typing import Any
 
 import pandas as pd
 
-from config.prompts import BATCH_NARRATE_PROMPT, CHAT_SYSTEM_PROMPT
+from config.prompts import BATCH_NARRATE_PROMPT, CHART_SPEC_PROMPT, CHAT_SYSTEM_PROMPT
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
+from llm.text_utils import strip_fenced_block
 from services.citation_verifier import CitationVerifier
 from services.data_loader import load_dataframe
 from services.data_processor import batch_verify, batch_verify_structured
@@ -45,6 +46,8 @@ MODES: list[dict[str, str]] = [
      "hint": "上传 CSV / Excel，每行一条引用，自动批量核验"},
     {"id": "fake_analysis",  "label": "虚假特征", "icon": "🔬",
      "hint": "对历史或批量结果做虚假模式聚类分析"},
+    {"id": "chart",          "label": "数据画图", "icon": "📈",
+     "hint": "用自然语言描述，对最近一批结果出可视化图表"},
     {"id": "ocr",            "label": "截图识别", "icon": "🖼️",
      "hint": "截图需先转成文本；DeepSeek 只接收文本化数据"},
     {"id": "export",         "label": "导出报告", "icon": "📄",
@@ -71,7 +74,7 @@ _TABLE_EXTS = (".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".json")
 # Text-only intents the LLM router is allowed to pick. Batch / OCR never come
 # from text — they require an uploaded table / image and are decided by file
 # type, which is unambiguous and needs no model call.
-_TEXT_INTENTS = ("verify_single", "fake_analysis", "export", "chat")
+_TEXT_INTENTS = ("verify_single", "fake_analysis", "chart", "export", "chat")
 
 
 def dispatch_auto(
@@ -132,6 +135,7 @@ def _classify_text_intent_llm(text: str, history: list[dict[str, Any]]) -> str |
         "你是学术引用助手的意图分类器。只能输出下列标签之一，禁止任何解释或标点：\n"
         "verify_single —— 用户给出了一条具体的文献/引用条目（含标题、作者、DOI、年份、期刊等），希望核验其真伪。\n"
         "fake_analysis —— 用户想对已有的一批验证结果做「虚假特征/造假模式」的统计或聚类分析。\n"
+        "chart —— 用户想把已有的验证结果画成图表/可视化（柱状图、饼图、折线、散点、分布图、趋势等）。\n"
         "export —— 用户想导出或下载验证报告（HTML/PDF）。\n"
         "chat —— 其它所有情况：提问、解释概念、对结果追问、闲聊、寒暄等。\n"
         f"当前对话{'已有' if has_results else '尚无'}验证结果。拿不准时优先选 chat。"
@@ -168,6 +172,8 @@ def _classify_text_intent_heuristic(text: str) -> str:
         return "export"
     if any(k in msg for k in ("虚假特征", "造假模式", "虚假模式", "造假分析", "虚假分析", "模式分析")):
         return "fake_analysis"
+    if _looks_like_chart_request(msg):
+        return "chart"
     # A concrete citation usually carries a DOI / arXiv id, or reads like a
     # reference line (a 4-digit year + a quoted/《》 title) rather than a question.
     is_question = msg.endswith(("?", "？")) or any(
@@ -182,12 +188,35 @@ def _classify_text_intent_heuristic(text: str) -> str:
     return "chat"
 
 
+# Words that signal "draw me a chart" — used both by the heuristic intent
+# fallback and by ``_is_obvious_chat`` so a charting ask phrased as a question
+# ("能不能画个饼图？") still reaches the chart tool instead of plain chat.
+_CHART_KEYWORDS = (
+    "画图", "画个", "画一", "画张", "画成", "作图", "绘图", "绘制",
+    "图表", "可视化", "柱状图", "条形图", "饼图", "饼状", "折线",
+    "散点", "直方图", "分布图", "趋势图", "chart", "plot", "histogram",
+    "bar chart", "pie chart", "可视",
+)
+
+
+def _looks_like_chart_request(text: str) -> bool:
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    low = msg.lower()
+    return any(k in low for k in _CHART_KEYWORDS)
+
+
 def _is_obvious_chat(text: str) -> bool:
     """Keep natural questions out of the tool router unless they are clearly citations."""
     msg = (text or "").strip()
     if not msg:
         return False
     low = msg.lower()
+    # A charting ask is a tool request, not chat — let it fall through to the
+    # classifier even when it ends with a question mark.
+    if _looks_like_chart_request(msg):
+        return False
     if re.search(r"\b(10\.\d{4,9}/[-._;()/:a-z0-9]+|arxiv:\s*\d{4}\.\d{4,5})\b", low):
         return False
     if re.search(r"(18|19|20)\d{2}", msg) and (
@@ -229,6 +258,8 @@ def dispatch(
             return _run_verify_batch(text, files)
         if mode == "fake_analysis":
             return _run_fake_analysis(files, history)
+        if mode == "chart":
+            return _run_chart(text, files, history)
         if mode == "ocr":
             return _run_ocr(text, files)
         if mode == "export":
@@ -422,6 +453,190 @@ def _run_fake_analysis(
             "rows": _df_to_records(df.head(200)),
         },
     }
+
+
+# --------------------------------------------------------------------- #
+# chart — natural-language → safe chart spec → local pandas + Plotly
+# --------------------------------------------------------------------- #
+_CHART_TYPES = ("bar", "pie", "line", "histogram", "scatter", "box")
+_CHART_AGGS = ("count", "sum", "mean", "none")
+
+
+def _run_chart(
+    text: str,
+    files: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Turn a natural-language request into a chart over the latest result set.
+
+    DeepSeek only picks the *spec* (chart type + which columns + aggregation);
+    the data never round-trips through the model. We validate every column the
+    model names against the real DataFrame, so the model cannot inject anything
+    that isn't a genuine column. Rendering happens in ``ui.chat_shell`` with
+    Plotly — no code execution anywhere in the loop.
+    """
+    df = _df_from_files_or_history(files, history)
+    if df is None or df.empty:
+        return _error(
+            "还没有可画图的数据。先做一次「批量验证」（上传 CSV/Excel）或上传一份结果表格，"
+            "再让我画图就行。",
+            "chart",
+        )
+
+    spec = _chart_spec_from_llm(text, df) if runtime_api_key() else None
+    if spec is None:
+        spec = _heuristic_chart_spec(df)
+    if spec is None:
+        return _error("这份数据里没有适合画图的列（需要至少一个分类或数值列）。", "chart")
+
+    chart_type = spec["chart_type"]
+    title = spec.get("title") or "数据图表"
+    reason = (spec.get("reason") or "").strip()
+    summary = f"已按你的需求生成 **{title}**（{_CHART_TYPE_LABELS.get(chart_type, chart_type)}）。"
+    if reason:
+        summary += f"\n\n_{reason}_"
+
+    return {
+        "role": "assistant",
+        "kind": "chart",
+        "mode": "chart",
+        "text": summary,
+        "data": {
+            "spec": spec,
+            "rows": _df_to_records(df),
+        },
+    }
+
+
+_CHART_TYPE_LABELS = {
+    "bar": "柱状图", "pie": "饼图", "line": "折线图",
+    "histogram": "直方图", "scatter": "散点图", "box": "箱线图",
+}
+
+
+def _column_profile(df: pd.DataFrame, max_cols: int = 30, sample: int = 5) -> list[dict[str, Any]]:
+    """Compact, model-friendly description of each column: name, kind, samples.
+
+    Sent to DeepSeek so it can pick sensible x/y/color without ever seeing the
+    full data. Numeric vs. categorical is surfaced because it drives chart-type
+    selection (histogram/scatter want numbers; pie/bar want categories)."""
+    profile: list[dict[str, Any]] = []
+    for col in list(df.columns)[:max_cols]:
+        series = df[col]
+        is_numeric = bool(pd.api.types.is_numeric_dtype(series))
+        values = series.dropna().unique()[:sample]
+        profile.append(
+            {
+                "列名": str(col),
+                "类型": "数值" if is_numeric else "分类/文本",
+                "唯一值数": int(series.nunique(dropna=True)),
+                "示例": [str(v)[:40] for v in values],
+            }
+        )
+    return profile
+
+
+def _chart_spec_from_llm(text: str, df: pd.DataFrame) -> dict[str, Any] | None:
+    """Ask DeepSeek for a chart spec; return a *validated* spec or None."""
+    payload = {
+        "可用列": _column_profile(df),
+        "总行数": int(len(df)),
+        "用户请求": (text or "").strip() or "请挑一个最能反映这批结果的图。",
+    }
+    try:
+        client = DeepSeekClient(timeout=25)
+        raw = client.chat(
+            messages=[
+                {"role": "system", "content": CHART_SPEC_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+            ],
+            temperature=0.1,
+            max_tokens=400,
+            retries=0,
+        )
+        spec = json.loads(strip_fenced_block(raw, "json"))
+    except Exception:  # noqa: BLE001 - any failure → heuristic fallback upstream
+        return None
+    return _validate_chart_spec(spec, df)
+
+
+def _validate_chart_spec(spec: Any, df: pd.DataFrame) -> dict[str, Any] | None:
+    """Coerce a raw model spec into a safe one, or None if unusable.
+
+    Every column the model names must exist in ``df``; unknown columns are
+    dropped (or the whole spec rejected when the required axis is bogus). This
+    is the trust boundary — nothing downstream touches a column we didn't OK."""
+    if not isinstance(spec, dict):
+        return None
+    cols = {str(c) for c in df.columns}
+
+    chart_type = str(spec.get("chart_type") or "").strip().lower()
+    if chart_type not in _CHART_TYPES:
+        chart_type = "bar"
+
+    def _col_or_none(value: Any) -> str | None:
+        value = str(value).strip() if value is not None else ""
+        return value if value in cols else None
+
+    x = _col_or_none(spec.get("x"))
+    y = _col_or_none(spec.get("y"))
+    color = _col_or_none(spec.get("color"))
+
+    # x is the primary axis for every chart type; without a real one we can't
+    # plot. Fall back to the first usable column so a near-miss still renders.
+    if x is None:
+        x = next(iter(df.columns), None)
+        if x is None:
+            return None
+        x = str(x)
+
+    agg = str(spec.get("agg") or "").strip().lower()
+    if agg not in _CHART_AGGS:
+        agg = "count"
+    # sum/mean need a numeric y; downgrade to count when y is missing/non-numeric.
+    if agg in ("sum", "mean"):
+        if y is None or not pd.api.types.is_numeric_dtype(df[y]):
+            agg, y = "count", None
+    # scatter/histogram are raw (un-aggregated) by nature.
+    if chart_type in ("scatter", "histogram"):
+        agg = "none"
+
+    return {
+        "chart_type": chart_type,
+        "x": x,
+        "y": y,
+        "color": color,
+        "agg": agg,
+        "title": str(spec.get("title") or "").strip()[:60] or "数据图表",
+        "reason": str(spec.get("reason") or "").strip()[:200],
+    }
+
+
+def _heuristic_chart_spec(df: pd.DataFrame) -> dict[str, Any] | None:
+    """Sensible default when AI is off or its spec is unusable.
+
+    Prefers the verdict distribution (the most meaningful view of a result
+    set); otherwise pies the first low-cardinality category, else histograms
+    the first numeric column."""
+    cols = list(df.columns)
+    if "verdict" in cols:
+        return {
+            "chart_type": "pie", "x": "verdict", "y": None, "color": None,
+            "agg": "count", "title": "判定结果分布", "reason": "默认展示各判定结果的占比。",
+        }
+    for col in cols:
+        if not pd.api.types.is_numeric_dtype(df[col]) and 1 < df[col].nunique(dropna=True) <= 30:
+            return {
+                "chart_type": "bar", "x": str(col), "y": None, "color": None,
+                "agg": "count", "title": f"{col} 分布", "reason": f"默认按「{col}」统计各类别数量。",
+            }
+    for col in cols:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            return {
+                "chart_type": "histogram", "x": str(col), "y": None, "color": None,
+                "agg": "none", "title": f"{col} 分布", "reason": f"默认展示「{col}」的数值分布。",
+            }
+    return None
 
 
 # --------------------------------------------------------------------- #

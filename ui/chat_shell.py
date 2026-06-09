@@ -248,6 +248,84 @@ def _render_fake_analysis(data: dict[str, Any], idx: int) -> None:
             )
 
 
+def _render_chart(data: dict[str, Any], idx: int) -> None:
+    """Render a chart from a validated spec + the result rows.
+
+    The spec was already sanitised in ``agent_router._validate_chart_spec``
+    (every column verified against the DataFrame), so here we only do the
+    pandas aggregation + Plotly call. No ``eval``/``exec``, no model-supplied
+    code — just a fixed mapping from chart_type to a ``plotly.express`` call."""
+    spec = data.get("spec") or {}
+    rows = data.get("rows") or []
+    if not spec or not rows:
+        return
+    df = pd.DataFrame(rows)
+
+    try:
+        fig = _build_chart_fig(df, spec)
+    except Exception as exc:  # noqa: BLE001 - never let a bad spec break the stream
+        st.warning(f"这张图没能画出来：{exc}")
+        return
+    if fig is None:
+        st.warning("这份数据不足以生成该图表。")
+        return
+
+    fig.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
+    st.plotly_chart(fig, use_container_width=True, key=f"chart_{idx}")
+
+    with st.expander(f"作图所用数据（{len(df)} 行）", expanded=False):
+        st.dataframe(df, use_container_width=True, hide_index=True, key=f"chart_df_{idx}")
+
+
+def _build_chart_fig(df: pd.DataFrame, spec: dict[str, Any]):
+    """Map a validated spec to a Plotly figure. Returns None if unplottable."""
+    chart_type = spec.get("chart_type", "bar")
+    x = spec.get("x")
+    y = spec.get("y")
+    color = spec.get("color")
+    agg = spec.get("agg", "count")
+    title = spec.get("title") or "数据图表"
+
+    if x not in df.columns:
+        return None
+    if color is not None and color not in df.columns:
+        color = None
+
+    # Aggregate first when asked, so bar/line/pie show one value per category
+    # instead of Plotly's implicit stacking of raw rows.
+    plot_df = df
+    if agg in ("count", "sum", "mean") and chart_type in ("bar", "line", "pie"):
+        group_cols = [c for c in (x, color) if c]
+        if agg == "count":
+            plot_df = df.groupby(group_cols, dropna=False).size().reset_index(name="计数")
+            value_col = "计数"
+        else:
+            if y not in df.columns:
+                return None
+            grouped = df.groupby(group_cols, dropna=False)[y]
+            plot_df = (grouped.sum() if agg == "sum" else grouped.mean()).reset_index()
+            value_col = y
+    else:
+        value_col = y
+
+    if chart_type == "pie":
+        return px.pie(plot_df, names=x, values=value_col, color=color, hole=0.45, title=title)
+    if chart_type == "histogram":
+        return px.histogram(df, x=x, color=color, nbins=20, title=title)
+    if chart_type == "scatter":
+        if y not in df.columns:
+            return None
+        return px.scatter(df, x=x, y=y, color=color, title=title)
+    if chart_type == "box":
+        if y not in df.columns:
+            return None
+        return px.box(df, x=x, y=y, color=color, title=title)
+    if chart_type == "line":
+        return px.line(plot_df, x=x, y=value_col, color=color, markers=True, title=title)
+    # default: bar
+    return px.bar(plot_df, x=x, y=value_col, color=color, barmode="group", title=title)
+
+
 def _render_ocr(data: dict[str, Any], idx: int) -> None:
     raw_text = data.get("raw_text", "")
     citations = data.get("citations", []) or []
@@ -575,6 +653,7 @@ _KIND_RENDERERS.update(
         "verify_single": _render_verify_single,
         "verify_batch": _render_verify_batch,
         "fake_analysis": _render_fake_analysis,
+        "chart": _render_chart,
         "ocr": _render_ocr,
         "export": _render_export,
     }
