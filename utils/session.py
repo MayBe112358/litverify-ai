@@ -17,14 +17,32 @@ best-effort: a DB hiccup never breaks the chat itself.
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime
 from typing import Any
 
 import streamlit as st
 
-from config.settings import settings
+from config.settings import PROJECT_ROOT, settings
 from db.history import delete_chat_session, load_chat_sessions, save_chat_session
+
+
+def _is_shared_deployment() -> bool:
+    """True when this instance serves multiple anonymous users (e.g. a
+    Streamlit Community Cloud deployment), where one shared SQLite would
+    leak conversations between visitors.
+
+    Chat persistence is then disabled — each visitor's chats live only in
+    their own browser session. Detected via the Community Cloud mount path
+    (/mount/src/...) or forced with LITVERIFY_SHARED_DEPLOYMENT=1.
+    """
+    flag = os.getenv("LITVERIFY_SHARED_DEPLOYMENT", "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    if flag in {"0", "false", "no"}:
+        return False
+    return str(PROJECT_ROOT).replace("\\", "/").startswith("/mount/src")
 
 
 DEFAULTS: dict[str, Any] = {
@@ -49,10 +67,11 @@ def init_session() -> None:
 
     if "sessions" not in st.session_state:
         restored: dict[str, dict] = {}
-        try:
-            restored = {s["id"]: s for s in load_chat_sessions()}
-        except Exception:  # noqa: BLE001 - persistence is best-effort
-            restored = {}
+        if not _is_shared_deployment():
+            try:
+                restored = {s["id"]: s for s in load_chat_sessions()}
+            except Exception:  # noqa: BLE001 - persistence is best-effort
+                restored = {}
         st.session_state["sessions"] = restored
         if restored:
             # Most recently updated session first (load order) — reopen it so
@@ -82,10 +101,11 @@ def new_session(activate: bool = True) -> str:
 def delete_session(sid: str) -> None:
     sessions: dict[str, dict] = st.session_state.get("sessions", {})
     sessions.pop(sid, None)
-    try:
-        delete_chat_session(sid)
-    except Exception:  # noqa: BLE001 - persistence is best-effort
-        pass
+    if not _is_shared_deployment():
+        try:
+            delete_chat_session(sid)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass
     if st.session_state.get("active_session_id") == sid:
         st.session_state["active_session_id"] = next(iter(sessions), None)
         if st.session_state["active_session_id"] is None:
@@ -117,7 +137,8 @@ def append_message(message: dict[str, Any]) -> None:
         if first_user:
             text = (first_user["text"] or "").strip().splitlines()[0]
             sess["title"] = (text[:24] + "…") if len(text) > 24 else (text or "新对话")
-    try:
-        save_chat_session(sess)
-    except Exception:  # noqa: BLE001 - persistence is best-effort
-        pass
+    if not _is_shared_deployment():
+        try:
+            save_chat_session(sess)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass

@@ -74,3 +74,15 @@ def test_load_skips_corrupt_messages(tmp_db) -> None:
     # sanity: the table itself still valid JSON for new writes
     history.save_chat_session(_session("c3"))
     assert json.loads("[]") == []
+
+
+def test_shared_deployment_detection(monkeypatch) -> None:
+    from utils import session as session_mod
+
+    monkeypatch.setenv("LITVERIFY_SHARED_DEPLOYMENT", "1")
+    assert session_mod._is_shared_deployment() is True
+    monkeypatch.setenv("LITVERIFY_SHARED_DEPLOYMENT", "0")
+    assert session_mod._is_shared_deployment() is False
+    monkeypatch.delenv("LITVERIFY_SHARED_DEPLOYMENT")
+    # 本地 Windows 路径不在 /mount/src 下 → 非共享部署
+    assert session_mod._is_shared_deployment() is False
