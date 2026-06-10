@@ -41,11 +41,12 @@ def safe_html(s: str) -> str:
 def set_tab_chrome(title: str = "LitVerify AI", icon: str = "🔎") -> None:
     """Push the browser tab title + emoji favicon (called once from app.py)."""
     import json
-    import streamlit.components.v1 as components
+
+    import streamlit as st
 
     safe_title = json.dumps(title)
     safe_icon = json.dumps(icon)
-    components.html(
+    st.iframe(
         f"""
         <script>
         (function () {{
@@ -75,5 +76,5 @@ def set_tab_chrome(title: str = "LitVerify AI", icon: str = "🔎") -> None:
         }})();
         </script>
         """,
-        height=0,
+        height=1,
     )

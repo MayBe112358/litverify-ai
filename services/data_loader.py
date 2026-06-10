@@ -141,31 +141,3 @@ def load_dataframe(
         return pd.read_parquet(io.BytesIO(raw))
 
     raise ValueError(f"未实现的格式处理：{ext}")
-
-
-def profile_dataframe(df: pd.DataFrame) -> dict:
-    """Create a compact profile for upload preview and reports."""
-    missing_total = int(df.isna().sum().sum())
-    column_profiles: list[dict[str, object]] = []
-    for col in df.columns:
-        missing = int(df[col].isna().sum())
-        column_profiles.append(
-            {
-                "column": col,
-                "dtype": str(df[col].dtype),
-                "missing": missing,
-                "missing_ratio": missing / len(df) if len(df) else 0,
-                "unique": int(df[col].nunique(dropna=True)),
-            }
-        )
-
-    return {
-        "rows": int(len(df)),
-        "cols": int(df.shape[1]),
-        "memory_mb": round(df.memory_usage(deep=True).sum() / 1024 / 1024, 2),
-        "missing_total": missing_total,
-        "missing_ratio": round(missing_total / df.size, 4) if df.size else 0,
-        "dtypes": df.dtypes.astype(str).to_dict(),
-        "duplicates": int(df.duplicated().sum()),
-        "columns": column_profiles,
-    }

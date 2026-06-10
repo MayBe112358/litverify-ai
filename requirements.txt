@@ -9,9 +9,8 @@ openpyxl>=3.1.2          # required by pd.read_excel for .xlsx
 duckdb>=0.10.0           # optional: large CSV streaming, falls back to pandas
 chardet>=5.2.0           # optional: encoding detection, falls back to common codecs
 
-# AI / multimodal
+# AI
 openai>=1.30.0           # DeepSeek client uses the OpenAI-compatible SDK
-pillow>=10.2.0           # screenshot OCR + agent_router image handling
 
 # Citation verification APIs
 requests>=2.31.0
@@ -23,8 +22,6 @@ rapidfuzz>=3.6.1         # optional: title similarity, falls back to difflib
 # Report export
 jinja2>=3.1.3
 reportlab>=4.2.0
-# WeasyPrint requires GTK on Windows; the app degrades gracefully if missing.
-weasyprint>=61.0; platform_system != "Windows"
 
 # Config
 python-dotenv>=1.0.1

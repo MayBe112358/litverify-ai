@@ -70,11 +70,6 @@ def _counts(df: pd.DataFrame) -> dict[str, int]:
     }
 
 
-def _safe_report_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Thin wrapper kept for backwards compatibility within this module."""
-    return strip_report_json(df)
-
-
 def _default_findings(total: int, counts: dict[str, int]) -> list[str]:
     return [
         (
@@ -91,7 +86,7 @@ def build_verification_report_html(
     findings: list[str] | None = None,
 ) -> str:
     """Build a standalone HTML verification report."""
-    safe_df = _safe_report_df(df)
+    safe_df = strip_report_json(df)
     counts = _counts(safe_df)
     total = int(len(safe_df))
     return REPORT_TEMPLATE.render(
@@ -110,18 +105,14 @@ def build_verification_report_pdf(
     findings: list[str] | None = None,
 ) -> bytes:
     """Build a downloadable PDF verification report with ReportLab."""
-    try:
-        from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.lib.units import mm
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-    except Exception:  # noqa: BLE001
-        html = build_verification_report_html(df, title=title, findings=findings)
-        return html_to_pdf_bytes(html)
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-    safe_df = _safe_report_df(df)
+    safe_df = strip_report_json(df)
     counts = _counts(safe_df)
     total = int(len(safe_df))
     rendered_findings = findings or _default_findings(total, counts)
@@ -330,12 +321,3 @@ def _pdf_cell(value: object) -> str:
     if len(text) > 260:
         text = f"{text[:257]}..."
     return html_escape(text)
-
-
-def html_to_pdf_bytes(html: str) -> bytes:
-    """Render HTML into PDF bytes with WeasyPrint when available."""
-    try:
-        from weasyprint import HTML
-    except Exception as exc:  # pragma: no cover - depends on optional system libs
-        raise RuntimeError("当前环境无法加载 WeasyPrint，请先导出 HTML 或安装 PDF 依赖。") from exc
-    return HTML(string=html).write_pdf()

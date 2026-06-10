@@ -6,7 +6,8 @@ import pandas as pd
 import pytest
 import requests
 
-from services.agent_router import _detect_structured_columns, _df_to_records
+from services.agent_router import _detect_structured_columns
+from utils.dataframe import df_to_json_safe_records
 from services.api_errors import is_transient_error
 from services.data_processor import _build_structured_citation, _split_authors
 from services.fake_analyzer import group_fake_rates, rule_failure_profile, verdict_counts
@@ -123,7 +124,7 @@ def test_split_authors_multiple_separators():
 
 def test_df_to_records_nan_to_none():
     df = pd.DataFrame({"a": [1, None], "report_json": ["x", "y"]})
-    records = _df_to_records(df)
+    records = df_to_json_safe_records(df)
     assert "report_json" not in records[0]
     assert records[1]["a"] is None
 

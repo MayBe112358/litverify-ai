@@ -27,7 +27,6 @@ class Settings:
     #   Pro   = deepseek-v4-pro   （更聪明，深度推理 / 智能洞察）
     #   Flash = deepseek-v4-flash （更快、更便宜，演示流畅）
     chat_model: str = os.getenv("DEEPSEEK_CHAT_MODEL", "deepseek-v4-pro")
-    vl_model: str = os.getenv("DEEPSEEK_VL_MODEL", "deepseek-v4-pro")
 
     # Pro / Flash 别名 → 实际模型名的映射。.env 可覆盖。
     deepseek_pro_model: str = os.getenv("DEEPSEEK_PRO_MODEL", "deepseek-v4-pro")

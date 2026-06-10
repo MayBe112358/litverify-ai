@@ -210,9 +210,8 @@ def apply_theme(name: str | None = None) -> None:
     css = css.replace("__LOGO_URI__", logo_uri)
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-    import streamlit.components.v1 as components
     marker = "dark" if active == "深色" else "light"
-    components.html(
+    st.iframe(
         _THEME_MARKER_JS.replace("__THEME__", marker),
-        height=0,
+        height=1,
     )

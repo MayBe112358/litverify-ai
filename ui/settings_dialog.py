@@ -75,7 +75,6 @@ def open_settings_dialog() -> None:
         )
         chosen_model = settings.deepseek_flash_model if tier == "Flash" else settings.deepseek_pro_model
         st.session_state["deepseek_chat_model"] = chosen_model
-        st.session_state["deepseek_vl_model"] = chosen_model
         st.caption(f"当前调用：`{chosen_model}`")
 
     # ----- Tab 2: thresholds + interface config -----

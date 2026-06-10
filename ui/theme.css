@@ -1533,3 +1533,14 @@ html:has([data-testid="stSidebar"][aria-expanded="true"]) .dw-rail-status {
     font-weight: 600 !important;
     box-shadow: var(--dw-shadow-xs);
 }
+
+
+/* ---- script-injection iframes ----------------------------------------
+   Every st.iframe in this app is an invisible JS bridge (tab chrome /
+   empty-flag / drag bridge / theme marker) rendered at height=1 because
+   st.iframe rejects height=0. Collapse their containers entirely —
+   display:none iframes still load and execute their scripts. Plotly
+   charts use stPlotlyChart, so they are unaffected. */
+div[data-testid="stElementContainer"]:has(> iframe[data-testid="stIFrame"]) {
+    display: none !important;
+}

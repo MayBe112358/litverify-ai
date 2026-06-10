@@ -7,14 +7,15 @@ can replay it after any Streamlit rerun::
     {
         "role": "assistant",
         "kind":  "verify_single" | "verify_batch" | "fake_analysis"
-               | "ocr" | "export" | "chat" | "error",
+               | "chart" | "export" | "chat" | "error",
         "text":  "...markdown summary...",
         "data":  {...kind-specific serialisable payload...},
-        "mode":  the chip the user picked,
+        "mode":  the inferred tool,
     }
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import re
@@ -23,7 +24,7 @@ from typing import Any, Iterator
 
 import pandas as pd
 
-from config.prompts import BATCH_NARRATE_PROMPT, CHART_SPEC_PROMPT, CHAT_SYSTEM_PROMPT
+from config.prompts import BATCH_NARRATE_PROMPT, CHART_CODE_PROMPT, CHAT_SYSTEM_PROMPT
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
 from llm.text_utils import strip_fenced_block
@@ -36,22 +37,16 @@ from services.rule_engine import VerificationReport
 from utils.dataframe import df_to_json_safe_records
 
 
-# Mode metadata — labels/icons shown on the user bubble + intent classifier.
+# Mode metadata — labels/icons shown on the user bubble + error messages.
+# Note: there is no "ocr" tool — an image upload routes to ``_run_ocr`` which
+# explains that screenshots must be converted to text first.
 MODES: list[dict[str, str]] = [
-    {"id": "chat",           "label": "智能问答", "icon": "💬",
-     "hint": "围绕验证结果或学术引用自由提问"},
-    {"id": "verify_single",  "label": "单条验证", "icon": "📋",
-     "hint": "粘贴或上传一条引用，多源比对后给出判定"},
-    {"id": "verify_batch",   "label": "批量验证", "icon": "📊",
-     "hint": "上传 CSV / Excel，每行一条引用，自动批量核验"},
-    {"id": "fake_analysis",  "label": "虚假特征", "icon": "🔬",
-     "hint": "对历史或批量结果做虚假模式聚类分析"},
-    {"id": "chart",          "label": "数据画图", "icon": "📈",
-     "hint": "用自然语言描述，对最近一批结果出可视化图表"},
-    {"id": "ocr",            "label": "截图识别", "icon": "🖼️",
-     "hint": "截图需先转成文本；DeepSeek 只接收文本化数据"},
-    {"id": "export",         "label": "导出报告", "icon": "📄",
-     "hint": "把最近一批结果导出为 HTML 验证报告"},
+    {"id": "chat",           "label": "智能问答", "icon": "💬"},
+    {"id": "verify_single",  "label": "单条验证", "icon": "📋"},
+    {"id": "verify_batch",   "label": "批量验证", "icon": "📊"},
+    {"id": "fake_analysis",  "label": "虚假特征", "icon": "🔬"},
+    {"id": "chart",          "label": "数据画图", "icon": "📈"},
+    {"id": "export",         "label": "导出报告", "icon": "📄"},
 ]
 
 MODES_BY_ID = {m["id"]: m for m in MODES}
@@ -75,23 +70,6 @@ _TABLE_EXTS = (".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".json")
 # from text — they require an uploaded table / image and are decided by file
 # type, which is unambiguous and needs no model call.
 _TEXT_INTENTS = ("verify_single", "fake_analysis", "chart", "export", "chat")
-
-
-def dispatch_auto(
-    text: str,
-    files: list[dict[str, Any]] | None = None,
-    history: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Agent entry point — infer what the user wants, then run it.
-
-    Replaces the old manual tool chips: file type decides batch/OCR
-    deterministically; for plain text we ask DeepSeek to classify the
-    intent (with a heuristic fallback when the model is unavailable).
-    """
-    files = files or []
-    history = history or []
-    mode = infer_mode(text, files, history)
-    return dispatch(mode, text, files, history)
 
 
 def infer_mode(
@@ -367,7 +345,7 @@ def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
         "mode": "verify_batch",
         "text": summary,
         "data": {
-            "rows": _df_to_records(result_df),
+            "rows": df_to_json_safe_records(result_df),
             "columns": list(result_df.columns),
             "counts": {str(k): int(v) for k, v in counts.items()},
             "filename": target["name"],
@@ -480,18 +458,14 @@ def _run_fake_analysis(
         "text": summary,
         "data": {
             "stats": stats,
-            "rows": _df_to_records(df.head(200)),
+            "rows": df_to_json_safe_records(df.head(200)),
         },
     }
 
 
 # --------------------------------------------------------------------- #
-# chart — natural-language → safe chart spec → local pandas + Plotly
+# chart — natural-language → DeepSeek-generated Python → sandboxed exec
 # --------------------------------------------------------------------- #
-_CHART_TYPES = ("bar", "pie", "line", "histogram", "scatter", "box")
-_CHART_AGGS = ("count", "sum", "mean", "none")
-
-
 def _run_chart(
     text: str,
     files: list[dict[str, Any]],
@@ -499,11 +473,12 @@ def _run_chart(
 ) -> dict[str, Any]:
     """Turn a natural-language request into a chart over the latest result set.
 
-    DeepSeek only picks the *spec* (chart type + which columns + aggregation);
-    the data never round-trips through the model. We validate every column the
-    model names against the real DataFrame, so the model cannot inject anything
-    that isn't a genuine column. Rendering happens in ``ui.chat_shell`` with
-    Plotly — no code execution anywhere in the loop.
+    With an API key, DeepSeek writes real plotting code (any plotly chart
+    type), which runs once here in a restricted namespace — no imports, no
+    file/network access, safe-builtins only, bounded by a timeout. The
+    resulting Figure is serialised to JSON so replays never re-execute the
+    code. A failed run is retried once with the traceback; if that also
+    fails (or AI is off) we fall back to the deterministic heuristic chart.
     """
     df = _df_from_files_or_history(files, history)
     if df is None or df.empty:
@@ -513,16 +488,33 @@ def _run_chart(
             "chart",
         )
 
-    spec = _chart_spec_from_llm(text, df) if runtime_api_key() else None
-    if spec is None:
-        spec = _heuristic_chart_spec(df)
+    if runtime_api_key():
+        generated = _chart_from_llm_code(text, df)
+        if generated is not None:
+            fig, code = generated
+            title = _fig_title(fig) or "数据图表"
+            return {
+                "role": "assistant",
+                "kind": "chart",
+                "mode": "chart",
+                "text": f"已按你的需求生成 **{title}**。",
+                "data": {
+                    "fig_json": fig.to_json(),
+                    "code": code,
+                    "rows": df_to_json_safe_records(df),
+                },
+            }
+
+    spec = _heuristic_chart_spec(df)
     if spec is None:
         return _error("这份数据里没有适合画图的列（需要至少一个分类或数值列）。", "chart")
 
-    chart_type = spec["chart_type"]
     title = spec.get("title") or "数据图表"
+    chart_label = _CHART_TYPE_LABELS.get(spec["chart_type"], spec["chart_type"])
+    summary = f"已生成 **{title}**（{chart_label}）。"
+    if runtime_api_key():
+        summary += "\n\n_（AI 代码生成未成功，已回退为默认图表；换个说法再试一次通常就好。）_"
     reason = (spec.get("reason") or "").strip()
-    summary = f"已按你的需求生成 **{title}**（{_CHART_TYPE_LABELS.get(chart_type, chart_type)}）。"
     if reason:
         summary += f"\n\n_{reason}_"
 
@@ -533,9 +525,17 @@ def _run_chart(
         "text": summary,
         "data": {
             "spec": spec,
-            "rows": _df_to_records(df),
+            "rows": df_to_json_safe_records(df),
         },
     }
+
+
+def _fig_title(fig: Any) -> str | None:
+    try:
+        title = fig.layout.title.text
+        return str(title).strip() or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _CHART_TYPE_LABELS = {
@@ -566,84 +566,123 @@ def _column_profile(df: pd.DataFrame, max_cols: int = 30, sample: int = 5) -> li
     return profile
 
 
-def _chart_spec_from_llm(text: str, df: pd.DataFrame) -> dict[str, Any] | None:
-    """Ask DeepSeek for a chart spec; return a *validated* spec or None."""
+# How many generation rounds the model gets: the first attempt plus one
+# repair attempt that sees the failed code + its error message.
+_CHART_CODE_ATTEMPTS = 2
+# Wall-clock budget for one exec of generated code. Generous for a groupby +
+# plotly call; mostly a backstop against an accidental heavy computation.
+_CHART_EXEC_TIMEOUT = 20.0
+
+# Names the generated code may use. Everything else (open/__import__/eval/…)
+# simply doesn't exist inside the exec namespace.
+_SAFE_BUILTIN_NAMES = (
+    "abs", "all", "any", "bool", "dict", "divmod", "enumerate", "filter",
+    "float", "format", "frozenset", "int", "isinstance", "len", "list", "map",
+    "max", "min", "range", "repr", "reversed", "round", "set", "slice",
+    "sorted", "str", "sum", "tuple", "zip", "ValueError", "TypeError",
+    "KeyError", "Exception",
+)
+
+# Cheap static screen on top of the namespace sandbox: these tokens have no
+# legitimate use in a df→plotly snippet, so reject early with a message the
+# repair round can act on. ``while`` is banned as the easiest infinite-loop
+# vector — the chart code never needs it.
+_CHART_FORBIDDEN = re.compile(
+    r"\b(import|open|exec|eval|compile|__import__|globals|locals|breakpoint"
+    r"|input|while|getattr|setattr|delattr|vars|dir|type)\b"
+)
+
+
+def _chart_from_llm_code(text: str, df: pd.DataFrame) -> tuple[Any, str] | None:
+    """Ask DeepSeek for plotting code and execute it in the sandbox.
+
+    Returns ``(fig, code)`` on success, None when generation/exec failed after
+    the repair attempt — the caller then falls back to the heuristic chart.
+    """
     payload = {
         "可用列": _column_profile(df),
         "总行数": int(len(df)),
         "用户请求": (text or "").strip() or "请挑一个最能反映这批结果的图。",
     }
-    try:
-        client = DeepSeekClient(timeout=25)
-        raw = client.chat(
-            messages=[
-                {"role": "system", "content": CHART_SPEC_PROMPT},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
-            ],
-            temperature=0.1,
-            max_tokens=400,
-            retries=0,
-        )
-        spec = json.loads(strip_fenced_block(raw, "json"))
-    except Exception:  # noqa: BLE001 - any failure → heuristic fallback upstream
-        return None
-    return _validate_chart_spec(spec, df)
-
-
-def _validate_chart_spec(spec: Any, df: pd.DataFrame) -> dict[str, Any] | None:
-    """Coerce a raw model spec into a safe one, or None if unusable.
-
-    Every column the model names must exist in ``df``; unknown columns are
-    dropped (or the whole spec rejected when the required axis is bogus). This
-    is the trust boundary — nothing downstream touches a column we didn't OK."""
-    if not isinstance(spec, dict):
-        return None
-    cols = {str(c) for c in df.columns}
-
-    chart_type = str(spec.get("chart_type") or "").strip().lower()
-    if chart_type not in _CHART_TYPES:
-        chart_type = "bar"
-
-    def _col_or_none(value: Any) -> str | None:
-        value = str(value).strip() if value is not None else ""
-        return value if value in cols else None
-
-    x = _col_or_none(spec.get("x"))
-    y = _col_or_none(spec.get("y"))
-    color = _col_or_none(spec.get("color"))
-
-    # x is the primary axis for every chart type; without a real one we can't
-    # plot. Fall back to the first usable column so a near-miss still renders.
-    if x is None:
-        x = next(iter(df.columns), None)
-        if x is None:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": CHART_CODE_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+    ]
+    for _ in range(_CHART_CODE_ATTEMPTS):
+        try:
+            client = DeepSeekClient(timeout=45)
+            raw = client.chat(messages=messages, temperature=0.2, max_tokens=1000, retries=0)
+        except Exception:  # noqa: BLE001 - model unavailable → heuristic fallback
             return None
-        x = str(x)
+        code = strip_fenced_block(raw, "python")
+        try:
+            fig = _exec_chart_code(code, df)
+            return fig, code
+        except Exception as exc:  # noqa: BLE001 - feed the error back for one repair
+            messages.append({"role": "assistant", "content": code})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"这段代码执行失败：{type(exc).__name__}: {exc}\n"
+                        "请修正后重新输出完整代码（仍然只输出代码本身）。"
+                    ),
+                }
+            )
+    return None
 
-    agg = str(spec.get("agg") or "").strip().lower()
-    if agg not in _CHART_AGGS:
-        agg = "count"
-    # sum/mean need a numeric y; downgrade to count when y is missing/non-numeric.
-    if agg in ("sum", "mean"):
-        if y is None or not pd.api.types.is_numeric_dtype(df[y]):
-            agg, y = "count", None
-    # scatter/histogram are raw (un-aggregated) by nature.
-    if chart_type in ("scatter", "histogram"):
-        agg = "none"
 
-    return {
-        "chart_type": chart_type,
-        "x": x,
-        "y": y,
-        "color": color,
-        "agg": agg,
-        "title": str(spec.get("title") or "").strip()[:60] or "数据图表",
-        "reason": str(spec.get("reason") or "").strip()[:200],
+def _exec_chart_code(code: str, df: pd.DataFrame) -> Any:
+    """Run generated plotting code in a restricted namespace; return its ``fig``.
+
+    The sandbox is two layers: a static token screen (`_CHART_FORBIDDEN`) and
+    an exec namespace whose ``__builtins__`` only contains `_SAFE_BUILTIN_NAMES`
+    — so even tokens the screen misses can't reach import machinery or the
+    filesystem. The code gets a *copy* of ``df`` plus pd/np/px/go, runs inside
+    a worker thread with a timeout, and must leave a plotly Figure in ``fig``.
+    """
+    import builtins as _builtins
+    from concurrent.futures import ThreadPoolExecutor
+
+    import numpy as np
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    if not (code or "").strip():
+        raise ValueError("模型没有返回代码")
+    match = _CHART_FORBIDDEN.search(code)
+    if match:
+        raise ValueError(f"代码包含被禁止的用法：{match.group(0)}")
+
+    namespace: dict[str, Any] = {
+        "__builtins__": {name: getattr(_builtins, name) for name in _SAFE_BUILTIN_NAMES},
+        "df": df.copy(),
+        "pd": pd,
+        "np": np,
+        "px": px,
+        "go": go,
     }
+
+    def _run() -> Any:
+        exec(compile(code, "<chart_code>", "exec"), namespace)  # noqa: S102
+        return namespace.get("fig")
+
+    # One-shot worker so a timeout abandons the thread instead of blocking the
+    # Streamlit script; shutdown(wait=False) lets the stuck thread die with it.
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lv-chart")
+    try:
+        fig = pool.submit(_run).result(timeout=_CHART_EXEC_TIMEOUT)
+    finally:
+        pool.shutdown(wait=False)
+    if fig is None:
+        raise ValueError("代码没有把图表赋值给变量 fig")
+    if not isinstance(fig, go.Figure):
+        raise TypeError(f"fig 不是 plotly Figure，而是 {type(fig).__name__}")
+    return fig
 
 
 def _heuristic_chart_spec(df: pd.DataFrame) -> dict[str, Any] | None:
-    """Sensible default when AI is off or its spec is unusable.
+    """Sensible default when AI is off or code generation failed.
 
     Prefers the verdict distribution (the most meaningful view of a result
     set); otherwise pies the first low-cardinality category, else histograms
@@ -707,8 +746,8 @@ def _run_export(history: list[dict[str, Any]]) -> dict[str, Any]:
         "mode": "export",
         "text": summary,
         "data": {
-            "html_b64": _b64encode(html.encode("utf-8")),
-            "pdf_b64": _b64encode(pdf),
+            "html_b64": base64.b64encode(html.encode("utf-8")).decode("ascii"),
+            "pdf_b64": base64.b64encode(pdf).decode("ascii"),
             "filename": f"{filename_stem}.html",
             "pdf_filename": f"{filename_stem}.pdf",
         },
@@ -973,13 +1012,6 @@ def _detect_structured_columns(df: pd.DataFrame) -> dict[str, str] | None:
     return None
 
 
-def _df_to_records(df: pd.DataFrame) -> list[dict[str, Any]]:
-    """Convert a DataFrame to JSON-safe records — see
-    :func:`utils.dataframe.df_to_json_safe_records` for the details. Kept
-    as a thin alias so the dispatch flow reads top-to-bottom."""
-    return df_to_json_safe_records(df)
-
-
 def _df_from_files_or_history(
     files: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -1148,11 +1180,6 @@ def _replay_turns(
 def _looks_like_image(name: str) -> bool:
     name = (name or "").lower()
     return any(name.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"))
-
-
-def _b64encode(data: bytes) -> str:
-    import base64
-    return base64.b64encode(data).decode("ascii")
 
 
 # Optional helper used by chat_shell for verify_single rendering

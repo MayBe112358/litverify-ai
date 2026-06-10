@@ -20,8 +20,8 @@ from typing import Any, Callable
 
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 import streamlit as st
-import streamlit.components.v1 as components
 
 from services.agent_router import (
     MODES_BY_ID,
@@ -38,7 +38,7 @@ from utils.session import active_session, append_message
 def _set_empty_flag(is_empty: bool) -> None:
     """Push html[data-dw-empty="1|0"] so CSS swaps composer layout."""
     flag = "1" if is_empty else "0"
-    components.html(
+    st.iframe(
         f"""
         <script>
         (function () {{
@@ -48,7 +48,7 @@ def _set_empty_flag(is_empty: bool) -> None:
         }})();
         </script>
         """,
-        height=0,
+        height=1,
     )
 
 
@@ -255,14 +255,43 @@ def _render_fake_analysis(data: dict[str, Any], idx: int) -> None:
 
 
 def _render_chart(data: dict[str, Any], idx: int) -> None:
-    """Render a chart from a validated spec + the result rows.
+    """Render a chart message.
 
-    The spec was already sanitised in ``agent_router._validate_chart_spec``
-    (every column verified against the DataFrame), so here we only do the
-    pandas aggregation + Plotly call. No ``eval``/``exec``, no model-supplied
-    code — just a fixed mapping from chart_type to a ``plotly.express`` call."""
-    spec = data.get("spec") or {}
+    Two payload shapes share the "chart" kind:
+
+    * ``fig_json`` + ``code`` — DeepSeek wrote plotting code which was already
+      executed once (sandboxed) in ``agent_router``; here we only deserialise
+      the stored Figure, so replays after a rerun never re-execute the code.
+    * ``spec`` — the deterministic fallback (AI off or generation failed):
+      a fixed mapping from chart_type to a ``plotly.express`` call.
+    """
     rows = data.get("rows") or []
+
+    fig_json = data.get("fig_json")
+    if fig_json:
+        try:
+            fig = pio.from_json(fig_json)
+        except Exception as exc:  # noqa: BLE001 - never let a bad payload break the stream
+            st.warning(f"这张图没能渲染出来：{exc}")
+            return
+        if not fig.layout.height:
+            fig.update_layout(height=420)
+        st.plotly_chart(fig, use_container_width=True, key=f"chart_{idx}")
+        code = data.get("code")
+        if code:
+            with st.expander("查看生成的 Python 代码", expanded=False):
+                st.code(code, language="python")
+        if rows:
+            with st.expander(f"作图所用数据（{len(rows)} 行）", expanded=False):
+                st.dataframe(
+                    pd.DataFrame(rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"chart_df_{idx}",
+                )
+        return
+
+    spec = data.get("spec") or {}
     if not spec or not rows:
         return
     df = pd.DataFrame(rows)
@@ -342,32 +371,6 @@ def _render_chat(data: dict[str, Any], idx: int) -> None:
             st.markdown(reasoning)
 
 
-def _render_ocr(data: dict[str, Any], idx: int) -> None:
-    raw_text = data.get("raw_text", "")
-    citations = data.get("citations", []) or []
-    reports = data.get("reports", []) or []
-
-    if citations:
-        with st.expander(f"识别到的引用 · {len(citations)} 条", expanded=False):
-            for line in citations:
-                st.markdown(f"- {line}")
-
-    if reports:
-        with st.expander(f"抽样核验结果 · {len(reports)} 条", expanded=True):
-            for rep in reports:
-                if rep.get("error"):
-                    st.warning(f"`{rep.get('raw', '')[:80]}` → {rep['error']}")
-                    continue
-                try:
-                    render_verdict_card(report_from_dict(rep))
-                except Exception as exc:  # noqa: BLE001
-                    st.error(f"卡片渲染失败：{exc}")
-
-    if raw_text:
-        with st.expander("OCR 原始文本", expanded=False):
-            st.code(raw_text, language=None)
-
-
 def _render_export(data: dict[str, Any], idx: int) -> None:
     html_b64 = data.get("html_b64")
     if not html_b64:
@@ -411,7 +414,6 @@ def _render_export(data: dict[str, Any], idx: int) -> None:
 # Composer  (＋ upload button  |  chat_input)
 # --------------------------------------------------------------------- #
 def _ensure_composer_state() -> None:
-    st.session_state.setdefault("pending_mode", "chat")
     st.session_state.setdefault("pending_files", [])
     st.session_state.setdefault("file_uploader_nonce", 0)
     st.session_state.setdefault("home_uploader_nonce", 0)
@@ -473,7 +475,7 @@ def _stage_uploaded_files(uploaded_files) -> bool:
 
 def _render_home_drop_upload() -> None:
     """Invisible full-home drop target that appears only while dragging files."""
-    components.html(DRAG_BRIDGE_SCRIPT, height=0)
+    st.iframe(DRAG_BRIDGE_SCRIPT, height=1)
     st.markdown(
         '<div class="dw-drop-preview"><div class="dw-drop-card">📎 松开即可上传文件</div></div>',
         unsafe_allow_html=True,
@@ -482,6 +484,7 @@ def _render_home_drop_upload() -> None:
     with st.container(key="home_drop_upload"):
         uploaded = st.file_uploader(
             "拖拽文件到主页上传",
+            type=_ACCEPTED_TYPES,
             accept_multiple_files=True,
             key=f"home_uploader_{nonce}",
             label_visibility="collapsed",
@@ -565,6 +568,7 @@ def _render_plus_uploader() -> None:
     with st.container(key="composer_plus"):
         uploaded = st.file_uploader(
             "上传文件",
+            type=_ACCEPTED_TYPES,
             accept_multiple_files=True,
             key=f"plus_uploader_{nonce}",
             label_visibility="collapsed",
@@ -742,7 +746,6 @@ _KIND_RENDERERS.update(
         "fake_analysis": _render_fake_analysis,
         "chart": _render_chart,
         "chat": _render_chat,
-        "ocr": _render_ocr,
         "export": _render_export,
     }
 )

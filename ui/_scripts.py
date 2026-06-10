@@ -1,4 +1,4 @@
-"""Inline JavaScript snippets injected by the chat shell via st.components.html.
+"""Inline JavaScript snippets injected by the chat shell via st.iframe.
 
 These live here (not in ``chat_shell.py``) so the Python module stays focused
 on the Streamlit layout, and so the JS itself is easier to scan without 900

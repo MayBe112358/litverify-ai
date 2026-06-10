@@ -7,11 +7,12 @@
 - **单条验证**：粘贴任意格式引用（或仅 DOI / 标题），输出 可信 / 可疑 / 虚假 判定 + 规则评分明细。
 - **批量验证**：上传 CSV / Excel，自动识别字段列逐条核验，回填中文结果列。
 - **虚假特征分析**：按 生成模型 / 学术领域 / 主题 分组统计虚假率与主要失效规则（对应赛题任务一）。
-- **截图识别 / 智能问答**（可选）：依赖 DeepSeek，需要配置 API Key。
+- **数据画图**：用自然语言提需求，DeepSeek 生成 Python 绘图代码，应用在受限沙箱中执行后用内置 Plotly 渲染器展示（柱状/饼/热力/旭日/雷达等不限类型；执行失败自动重试一轮，无 Key 时回退默认图表，界面可查看生成代码）。
+- **智能问答 / AI 解读**（可选）：依赖 DeepSeek，需要配置 API Key。截图请先转成文本再粘贴核验。
 - **报告导出**：一键导出 HTML / PDF 验证报告。
 
 > 验证核心（单条 / 批量 / 虚假特征 / 导出）**无需任何 API Key**，仅用本地规则 + 公开学术 API 即可运行。
-> DeepSeek 仅用于"AI 解读 / 截图 OCR / 智能问答"等增强功能。
+> DeepSeek 仅用于"AI 解读 / 智能问答"等增强功能。
 
 ## 1. 环境要求
 
@@ -34,7 +35,7 @@ python -m venv .venv
 
 ## 3. 配置 API Key（可选）
 
-仅在需要"AI 解读 / 截图 OCR / 智能问答"时需要。复制 `.env.example` 为 `.env` 并填写：
+仅在需要"AI 解读 / 智能问答"时需要。复制 `.env.example` 为 `.env` 并填写：
 
 ```bash
 cp .env.example .env
@@ -98,7 +99,7 @@ run.bat
 app.py                # Streamlit 入口
 config/               # 设置、提示词、规则 YAML
 services/             # 解析、规则引擎、API 客户端、批量处理、导出
-llm/                  # DeepSeek 客户端与解读 / OCR
+llm/                  # DeepSeek 客户端与解读
 utils/                # DOI / 相似度 / 缓存 / 会话 / DataFrame 助手
 ui/                   # 聊天外壳、主题、侧边栏、卡片（theme.css 为样式表）
 db/                   # SQLite 历史记录

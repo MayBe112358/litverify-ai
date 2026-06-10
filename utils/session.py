@@ -4,13 +4,16 @@ Shape (everything lives under ``st.session_state``)::
 
     sessions:           dict[str, dict]    # id -> session record
     active_session_id:  str | None         # currently selected session
-    pending_mode:       str                # tool chip selected for next send
 
-    # Legacy single-shot keys still respected by services:
-    deepseek_api_key, deepseek_chat_model, deepseek_vl_model,
+    # Single-shot keys read by services:
+    deepseek_api_key, deepseek_chat_model,
     real_threshold, suspicious_threshold,
-    theme_name,
-    last_verification_report
+    theme_name
+
+``st.session_state`` evaporates on every page reload / websocket reconnect /
+server restart, so sessions are written through to SQLite on each appended
+message and restored here on the next ``init_session``. Persistence is
+best-effort: a DB hiccup never breaks the chat itself.
 """
 from __future__ import annotations
 
@@ -21,17 +24,15 @@ from typing import Any
 import streamlit as st
 
 from config.settings import settings
+from db.history import delete_chat_session, load_chat_sessions, save_chat_session
 
 
 DEFAULTS: dict[str, Any] = {
     "theme_name": "浅色",
     "deepseek_api_key": "",
     "deepseek_chat_model": "",
-    "deepseek_vl_model": "",
     "real_threshold": settings.real_threshold,
     "suspicious_threshold": settings.suspicious_threshold,
-    "last_verification_report": None,
-    "pending_mode": "chat",
 }
 
 
@@ -45,11 +46,18 @@ def init_session() -> None:
         st.session_state["deepseek_api_key"] = settings.deepseek_api_key
     if not st.session_state.get("deepseek_chat_model"):
         st.session_state["deepseek_chat_model"] = settings.chat_model
-    if not st.session_state.get("deepseek_vl_model"):
-        st.session_state["deepseek_vl_model"] = settings.vl_model
 
     if "sessions" not in st.session_state:
-        st.session_state["sessions"] = {}
+        restored: dict[str, dict] = {}
+        try:
+            restored = {s["id"]: s for s in load_chat_sessions()}
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            restored = {}
+        st.session_state["sessions"] = restored
+        if restored:
+            # Most recently updated session first (load order) — reopen it so
+            # a reload/reconnect lands back in the conversation, not a blank page.
+            st.session_state["active_session_id"] = next(iter(restored))
     if not st.session_state["sessions"]:
         new_session(activate=True)
 
@@ -68,13 +76,16 @@ def new_session(activate: bool = True) -> str:
     }
     if activate:
         st.session_state["active_session_id"] = sid
-        st.session_state["pending_mode"] = "chat"
     return sid
 
 
 def delete_session(sid: str) -> None:
     sessions: dict[str, dict] = st.session_state.get("sessions", {})
     sessions.pop(sid, None)
+    try:
+        delete_chat_session(sid)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
     if st.session_state.get("active_session_id") == sid:
         st.session_state["active_session_id"] = next(iter(sessions), None)
         if st.session_state["active_session_id"] is None:
@@ -106,3 +117,7 @@ def append_message(message: dict[str, Any]) -> None:
         if first_user:
             text = (first_user["text"] or "").strip().splitlines()[0]
             sess["title"] = (text[:24] + "…") if len(text) > 24 else (text or "新对话")
+    try:
+        save_chat_session(sess)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass

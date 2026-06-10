@@ -32,11 +32,6 @@ def runtime_chat_model() -> str:
     return _session_str("deepseek_chat_model") or settings.chat_model
 
 
-def runtime_vl_model() -> str:
-    """Prefer the vision-model name set in the sidebar, then the env default."""
-    return _session_str("deepseek_vl_model") or settings.vl_model
-
-
 class DeepSeekClient:
     """Wrap chat and vision calls with consistent retry behavior."""
 
@@ -138,10 +133,3 @@ class DeepSeekClient:
             content = getattr(delta, "content", None)
             if content:
                 yield ("answer", content)
-
-    def vision_extract_table(self, *_args: Any, **_kwargs: Any) -> str:
-        """DeepSeek is only given text/JSON context in this app."""
-        raise RuntimeError(
-            "当前 DeepSeek 调用只接收文本化数据，不能直接读取图片或文件。"
-            "请先用本地 OCR/人工复制把截图中的引用转成文本后再发送。"
-        )
