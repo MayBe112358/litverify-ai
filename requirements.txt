@@ -1,9 +1,11 @@
 # Core UI + data stack
 streamlit>=1.43.0,<2.0  # need st.dialog + st.chat_input(accept_file=...)
 pandas>=2.2.0,<3.0
-# Streamlit Cloud 自带的 pip 24.0 解析不了 Metadata 2.4 格式的 wheel，会静默跳过
-# tzdata 2025.x 的全部候选，导致 pandas 的 tzdata>=2022.7 无解（ResolutionImpossible）。
-# 显式钉一个旧元数据格式的版本绕开；本地新 pip 装它也完全兼容。
+# Streamlit Cloud ships pip 24.0, which cannot parse Metadata-2.4 wheels and
+# silently discards every tzdata 2025.x candidate, making pandas' transitive
+# requirement tzdata>=2022.7 unsolvable (ResolutionImpossible). Pin a release
+# that still uses the old metadata format. (ASCII-only comments here: old pip
+# decodes this file with the system locale, not UTF-8.)
 tzdata==2024.2
 plotly>=5.20.0
 pyarrow>=15.0.0          # required by pd.read_parquet
