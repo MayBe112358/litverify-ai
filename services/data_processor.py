@@ -103,6 +103,23 @@ def _dispatch_jobs(
 # Verdict labels for the Chinese-facing result columns.
 _VERDICT_ZH = {"REAL": "可信", "SUSPICIOUS": "可疑", "FAKE": "虚假", "ERROR": "错误"}
 
+# 失败规则 → 否定式问题描述。直接复述规则名（如"DOI 在外部 DOI/学术库可解析"）
+# 读起来像通过项，写进「虚假特征」列会造成语义反转，这里统一翻成"哪里出了问题"。
+_RULE_FAIL_ZH = {
+    "doi_format": "DOI 格式错误",
+    "doi_resolve": "DOI 无法在外部学术库解析",
+    "title_match": "标题与权威库不一致",
+    "author_match": "作者列表与权威库不一致",
+    "venue_match": "期刊/会议与权威库不一致",
+    "year_reasonable": "年份缺失或不合理",
+    "page_volume_consistent": "卷/期/页与权威库不一致",
+    "arxiv_resolve": "arXiv ID 无法解析",
+    "cross_db_consistent": "多源外部库未命中或不一致",
+    "author_format": "作者姓名格式异常",
+    "venue_format": "期刊/会议名称可疑",
+    "title_quality": "标题长度或字符异常",
+}
+
 
 def _run_one(
     work: Callable[[], Any],
@@ -146,7 +163,11 @@ def _structured_ok(report) -> dict[str, Any]:
     """Chinese-facing result columns + the machine columns the fake-analysis /
     export paths still rely on (verdict / score / reasons)."""
     evidence = report.evidence.best_record()
-    failed = [r.name for r in report.rule_results if r.score < 0.5]
+    failed = [
+        _RULE_FAIL_ZH.get(r.id, f"{r.name}未通过")
+        for r in report.rule_results
+        if r.score < 0.5
+    ]
     return {
         "验证结果": _VERDICT_ZH.get(report.verdict, report.verdict),
         "可信度分数": report.overall_score,

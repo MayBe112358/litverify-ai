@@ -36,11 +36,28 @@ class CitationParser:
         """Parse citation text with deterministic heuristics and optional LLM fallback."""
         text = " ".join(str(raw_text or "").split())
         citation = self._heuristic_parse(text)
-        if self.use_llm_fallback and self._needs_llm(citation):
+        if (
+            self.use_llm_fallback
+            and self._needs_llm(citation)
+            and self._has_parseable_text(text)
+        ):
             llm = self._llm_parse(text)
             if llm:
                 citation = self._merge(citation, llm)
         return citation
+
+    @staticmethod
+    def _has_parseable_text(text: str) -> bool:
+        """False when the input is essentially just a DOI / arXiv id / URL.
+
+        此时文本里没有任何可供提取的标题、作者信息，再调 LLM 只会诱导模型
+        凭记忆"补全"元数据——幻觉出来的标题会污染后续规则比对，把一条真实
+        DOI 拉成可疑。这类输入直接走 DOI/ID 检索即可。"""
+        residue = re.sub(r"(?i)https?://\S+", " ", text)
+        residue = re.sub(r"(?i)\b10\.\d{4,9}/\S+", " ", residue)
+        residue = re.sub(r"(?i)\barxiv\s*[:：]?\s*\d{4}\.\d{4,5}(v\d+)?", " ", residue)
+        residue = re.sub(r"(?i)\b(doi|arxiv|url)\b\s*[:：]?", " ", residue)
+        return len(re.findall(r"[A-Za-z一-鿿]", residue)) >= 4
 
     def _heuristic_parse(self, text: str) -> Citation:
         doi = extract_doi(text)
@@ -230,7 +247,20 @@ class CitationParser:
         return primary
 
     @staticmethod
-    def _llm_parse(text: str) -> Citation | None:
+    def _grounded(text: str, value: Any) -> str | None:
+        """Return ``value`` only when it literally appears in the raw input.
+
+        LLM 解析只被允许"摘录"，不允许"补全"——凡是原文里找不到的标题/
+        作者/期刊一律丢弃，防止模型根据 DOI 或记忆联想出不存在的字段。
+        比对时去掉大小写与全部标点/空白差异。"""
+        if not value:
+            return None
+        norm = lambda s: re.sub(r"[\W_]+", "", str(s)).lower()  # noqa: E731
+        candidate = norm(value)
+        return str(value) if candidate and candidate in norm(text) else None
+
+    @classmethod
+    def _llm_parse(cls, text: str) -> Citation | None:
         try:
             client = DeepSeekClient(timeout=20)
             raw = client.chat(
@@ -244,10 +274,12 @@ class CitationParser:
             )
             data: dict[str, Any] = json.loads(strip_fenced_block(raw, "json"))
             return Citation(
-                title=data.get("title"),
-                authors=[str(x) for x in data.get("authors") or []],
+                title=cls._grounded(text, data.get("title")),
+                authors=[
+                    str(x) for x in data.get("authors") or [] if cls._grounded(text, x)
+                ],
                 year=int(data["year"]) if data.get("year") else None,
-                venue=data.get("venue"),
+                venue=cls._grounded(text, data.get("venue")),
                 volume=data.get("volume"),
                 issue=data.get("issue"),
                 pages=data.get("pages"),
