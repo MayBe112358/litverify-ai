@@ -12,7 +12,7 @@ AURORA_FLUID_SCRIPT = """
 (function () {
     var win = window.parent || window;
     var doc = win.document || document;
-    var version = "aurora-fluid-v7";
+    var version = "aurora-fluid-v8";
     if (win.__dwAurora && win.__dwAurora.version === version) {
         return;
     }
@@ -64,33 +64,25 @@ AURORA_FLUID_SCRIPT = """
         "uniform vec3 u_cursor;",      // xy: lerped cursor (uv), z: activity 0..1
         "uniform vec3 u_colors[6];",
         "uniform vec3 u_blobs[6];",   // xy: centre (uv), z: radius
-        "uniform vec4 u_ripples[24];", // xy: centre (uv), zw: stroke dir
-        "uniform float u_ages[24];",   // 0..1 alive, >=1 dead
         "void main() {",
         "  vec2 uv = gl_FragCoord.xy / u_res;",
         "  float aspect = u_res.x / u_res.y;",
         "  vec2 p = uv;",
-        "  p += 0.028 * vec2(",
-        "    sin(p.y * 4.1 + u_time * 0.33) + 0.5 * sin(p.y * 7.3 - u_time * 0.21),",
-        "    cos(p.x * 3.7 + u_time * 0.27) + 0.5 * cos(p.x * 6.2 + u_time * 0.16));",
-        //  Parting, not rippling: the cursor carries a soft gaussian
-        //  push that shoves the gradient aside while it moves (fades in
-        //  with speed, relaxes when idle), and the recent path keeps a
-        //  faint furrow that closes right back. No rings, no tint —
-        //  the colours simply make way and flow together again.
+        //  Cursor field: one wide, soft gaussian. No trail points — a
+        //  stroke leaves no line, the fluid just sways where the
+        //  pointer is and calms down when it rests.
         "  vec2 dc = p - u_cursor.xy;",
         "  dc.x *= aspect;",
-        "  float gc = exp(-dot(dc, dc) * 95.0);",
-        "  p += (0.060 * u_cursor.z * gc) * (dc / max(length(dc), 1e-4));",
-        "  for (int i = 0; i < 24; i++) {",
-        "    float age = u_ages[i];",
-        "    float life = clamp(1.0 - age, 0.0, 1.0);",
-        "    float env = smoothstep(0.0, 0.12, age) * life * life;",
-        "    vec2 d = p - u_ripples[i].xy;",
-        "    d.x *= aspect;",
-        "    float g = exp(-dot(d, d) * 150.0);",
-        "    p += (0.030 * env * g) * (d / max(length(d), 1e-4));",
-        "  }",
+        "  float stir = u_cursor.z * exp(-dot(dc, dc) * 60.0);",
+        //  Liquid undulation — two wave octaves, fast enough to be
+        //  clearly alive, and amplified around the cursor so a stroke
+        //  reads as extra turbulence in the fluid, not a drawn mark.
+        "  float wa = 0.045 * (1.0 + 1.8 * stir);",
+        "  p += wa * vec2(",
+        "    sin(p.y * 3.4 + u_time * 0.70) + 0.5 * sin(p.y * 6.4 - u_time * 0.47),",
+        "    cos(p.x * 3.1 + u_time * 0.62) + 0.5 * cos(p.x * 5.6 + u_time * 0.40));",
+        //  Gentle parting so the colours also make way under the pointer.
+        "  p += (0.045 * stir) * (dc / max(length(dc), 1e-4));",
         "  vec2 q = vec2(p.x * aspect, p.y);",
         "  vec3 acc = vec3(0.0);",
         "  float wsum = 0.0;",
@@ -140,9 +132,7 @@ AURORA_FLUID_SCRIPT = """
         strength: gl.getUniformLocation(prog, "u_strength"),
         cursor: gl.getUniformLocation(prog, "u_cursor"),
         colors: gl.getUniformLocation(prog, "u_colors[0]"),
-        blobs: gl.getUniformLocation(prog, "u_blobs[0]"),
-        ripples: gl.getUniformLocation(prog, "u_ripples[0]"),
-        ages: gl.getUniformLocation(prog, "u_ages[0]")
+        blobs: gl.getUniformLocation(prog, "u_blobs[0]")
     };
 
     // ---- palettes (pre-pastelised; picked per frame off data-dw-theme)
@@ -164,40 +154,24 @@ AURORA_FLUID_SCRIPT = """
         colors: flat(["#38366E", "#6D2F5B", "#47408C", "#175263", "#5A3153", "#1F5A50"])
     };
 
-    // ---- 6 blobs on slow lissajous paths spanning the whole viewport
+    // ---- 6 blobs on lissajous paths spanning the whole viewport.
+    // Periods of ~15-30s per axis: slow enough to stay calm, fast
+    // enough that the flow is clearly visible within a few seconds.
     var BLOBS = [
-        {x: 0.15, y: 0.25, r: 0.60, ax: 0.10, ay: 0.08, wx: 0.11, wy: 0.09, px: 0.0, py: 1.7},
-        {x: 0.85, y: 0.20, r: 0.55, ax: 0.09, ay: 0.10, wx: 0.08, wy: 0.12, px: 2.1, py: 0.6},
-        {x: 0.55, y: 0.55, r: 0.65, ax: 0.12, ay: 0.10, wx: 0.06, wy: 0.08, px: 4.0, py: 2.9},
-        {x: 0.15, y: 0.80, r: 0.55, ax: 0.08, ay: 0.09, wx: 0.10, wy: 0.07, px: 1.2, py: 5.1},
-        {x: 0.85, y: 0.85, r: 0.60, ax: 0.10, ay: 0.08, wx: 0.09, wy: 0.11, px: 3.3, py: 1.1},
-        {x: 0.50, y: 0.05, r: 0.50, ax: 0.11, ay: 0.07, wx: 0.07, wy: 0.10, px: 5.4, py: 3.8}
+        {x: 0.15, y: 0.25, r: 0.60, ax: 0.14, ay: 0.11, wx: 0.38, wy: 0.30, px: 0.0, py: 1.7},
+        {x: 0.85, y: 0.20, r: 0.55, ax: 0.13, ay: 0.14, wx: 0.28, wy: 0.42, px: 2.1, py: 0.6},
+        {x: 0.55, y: 0.55, r: 0.65, ax: 0.17, ay: 0.14, wx: 0.21, wy: 0.28, px: 4.0, py: 2.9},
+        {x: 0.15, y: 0.80, r: 0.55, ax: 0.11, ay: 0.13, wx: 0.35, wy: 0.24, px: 1.2, py: 5.1},
+        {x: 0.85, y: 0.85, r: 0.60, ax: 0.14, ay: 0.11, wx: 0.31, wy: 0.38, px: 3.3, py: 1.1},
+        {x: 0.50, y: 0.05, r: 0.50, ax: 0.15, ay: 0.10, wx: 0.24, wy: 0.35, px: 5.4, py: 3.8}
     ];
     var blobArr = new Float32Array(18);
 
-    // ---- ripple ring buffer, fed by pointer strokes
-    var MAXR = 24;
-    var RIPPLE_SECS = 1.2;
-    var rip = new Float32Array(MAXR * 4);
-    var ripBorn = new Float32Array(MAXR);
-    var ages = new Float32Array(MAXR);
-    for (var i = 0; i < MAXR; i++) { ripBorn[i] = -1e4; }
-    var ripIdx = 0;
     var t0 = win.performance.now();
     function now() { return (win.performance.now() - t0) / 1000; }
-    function emit(x, y, dx, dy) {
-        var w = Math.max(1, win.innerWidth), h = Math.max(1, win.innerHeight);
-        var i = ripIdx;
-        ripIdx = (ripIdx + 1) % MAXR;
-        rip[i * 4] = x / w;
-        rip[i * 4 + 1] = 1 - y / h;   // flip: gl_FragCoord y runs bottom-up
-        rip[i * 4 + 2] = dx;
-        rip[i * 4 + 3] = dy;
-        ripBorn[i] = now();
-    }
-    // Smoothed cursor state for the parting field: position lerps toward
-    // the raw pointer, activity rises with movement and relaxes when the
-    // pointer rests — so the gradient eases apart and eases back.
+    // Smoothed cursor state: position lerps toward the raw pointer,
+    // activity rises with movement speed and relaxes when the pointer
+    // rests — the fluid sways harder near a moving cursor, no trail.
     var curX = 0.5, curY = 0.5, act = 0;
     var tgtX = 0.5, tgtY = 0.5;
     var lastX = null, lastY = null;
@@ -212,15 +186,9 @@ AURORA_FLUID_SCRIPT = """
             return;
         }
         var dx = x - lastX, dy = y - lastY;
-        var d2 = dx * dx + dy * dy;
-        act = Math.min(1, act + Math.sqrt(d2) / 130);
-        if (d2 > 196) {  // one furrow point every ~14px of travel
-            emit(x, y, 0, 0);
-            lastX = x; lastY = y;
-        }
-    }
-    function onPointerDown(e) {
-        emit(e.clientX, e.clientY, 0, 0);  // soft poke
+        act = Math.min(1, act + Math.sqrt(dx * dx + dy * dy) / 130);
+        lastX = x;
+        lastY = y;
     }
     function resize() {
         // Half-resolution render — it's a soft gradient, upscaling is free.
@@ -248,9 +216,6 @@ AURORA_FLUID_SCRIPT = """
             blobArr[i * 3 + 1] = b.y + b.ay * Math.cos(t * b.wy + b.py);
             blobArr[i * 3 + 2] = b.r;
         }
-        for (var j = 0; j < MAXR; j++) {
-            ages[j] = (t - ripBorn[j]) / RIPPLE_SECS;
-        }
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.uniform2f(loc.res, canvas.width, canvas.height);
         gl.uniform1f(loc.time, t);
@@ -262,14 +227,11 @@ AURORA_FLUID_SCRIPT = """
         gl.uniform3f(loc.cursor, curX, curY, act);
         gl.uniform3fv(loc.colors, pal.colors);
         gl.uniform3fv(loc.blobs, blobArr);
-        gl.uniform4fv(loc.ripples, rip);
-        gl.uniform1fv(loc.ages, ages);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         schedule();
     }
 
     doc.addEventListener("pointermove", onPointerMove, { passive: true });
-    doc.addEventListener("pointerdown", onPointerDown, { passive: true });
     win.addEventListener("resize", resize);
     resize();
     root.setAttribute("data-dw-aurora-gl", "1");  // hides the CSS fallback blobs
@@ -282,7 +244,6 @@ AURORA_FLUID_SCRIPT = """
             if (rafId !== null) { win.cancelAnimationFrame(rafId); }
             if (timerId !== null) { win.clearTimeout(timerId); }
             doc.removeEventListener("pointermove", onPointerMove);
-            doc.removeEventListener("pointerdown", onPointerDown);
             win.removeEventListener("resize", resize);
             root.removeAttribute("data-dw-aurora-gl");
             if (canvas.parentNode) { canvas.parentNode.removeChild(canvas); }
