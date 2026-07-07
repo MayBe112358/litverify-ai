@@ -12,7 +12,7 @@ AURORA_FLUID_SCRIPT = """
 (function () {
     var win = window.parent || window;
     var doc = win.document || document;
-    var version = "aurora-fluid-v9";
+    var version = "aurora-fluid-v10";
     if (win.__dwAurora && win.__dwAurora.version === version) {
         return;
     }
@@ -64,6 +64,8 @@ AURORA_FLUID_SCRIPT = """
         "uniform vec3 u_cursor;",      // xy: lerped cursor (uv), z: activity 0..1
         "uniform vec3 u_colors[6];",
         "uniform vec3 u_blobs[6];",   // xy: centre (uv), z: radius
+        "uniform vec4 u_stirs[8];",   // xy: centre (uv), zw: stroke dir
+        "uniform vec2 u_smeta[8];",   // x: age (s), y: strength
         "void main() {",
         "  vec2 uv = gl_FragCoord.xy / u_res;",
         "  float aspect = u_res.x / u_res.y;",
@@ -77,12 +79,29 @@ AURORA_FLUID_SCRIPT = """
         //  Liquid undulation — two wave octaves, fast enough to be
         //  clearly alive, and amplified around the cursor so a stroke
         //  reads as extra turbulence in the fluid, not a drawn mark.
-        "  float wa = 0.07 * (1.0 + 1.8 * stir);",
+        "  float wa = 0.085 * (1.0 + 2.0 * stir);",
         "  p += wa * vec2(",
-        "    sin(p.y * 3.4 + u_time * 1.05) + 0.5 * sin(p.y * 6.4 - u_time * 0.70),",
-        "    cos(p.x * 3.1 + u_time * 0.92) + 0.5 * cos(p.x * 5.6 + u_time * 0.60));",
-        //  Gentle parting so the colours also make way under the pointer.
-        "  p += (0.045 * stir) * (dc / max(length(dc), 1e-4));",
+        "    sin(p.y * 3.4 + u_time * 1.70) + 0.5 * sin(p.y * 6.4 - u_time * 1.15),",
+        "    cos(p.x * 3.1 + u_time * 1.50) + 0.5 * cos(p.x * 5.6 + u_time * 1.00));",
+        //  Stir impulses: every swipe injects momentum. Colours get
+        //  dragged along the stroke and KEEP streaming after it — the
+        //  pulse peaks ~0.7s after injection and dies out over ~2.5s —
+        //  with a counter-rotating wake swirl on each side of the path.
+        "  for (int i = 0; i < 8; i++) {",
+        "    float age = u_smeta[i].x;",
+        "    float pulse = u_smeta[i].y * (age / 0.7) * exp(1.0 - age / 0.7);",
+        "    vec2 d = p - u_stirs[i].xy;",
+        "    d.x *= aspect;",
+        "    float g = exp(-dot(d, d) * 40.0);",
+        "    vec2 dir = u_stirs[i].zw;",
+        "    p -= dir * (0.06 * pulse * g);",
+        "    float side = d.x * dir.y - d.y * dir.x;",
+        "    float ang = 1.4 * pulse * g * clamp(side * 10.0, -1.0, 1.0);",
+        "    float cs = cos(ang);",
+        "    float sn = sin(ang);",
+        "    vec2 rd = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);",
+        "    p += vec2((rd.x - d.x) / aspect, rd.y - d.y);",
+        "  }",
         "  vec2 q = vec2(p.x * aspect, p.y);",
         "  vec3 acc = vec3(0.0);",
         "  float wsum = 0.0;",
@@ -132,7 +151,9 @@ AURORA_FLUID_SCRIPT = """
         strength: gl.getUniformLocation(prog, "u_strength"),
         cursor: gl.getUniformLocation(prog, "u_cursor"),
         colors: gl.getUniformLocation(prog, "u_colors[0]"),
-        blobs: gl.getUniformLocation(prog, "u_blobs[0]")
+        blobs: gl.getUniformLocation(prog, "u_blobs[0]"),
+        stirs: gl.getUniformLocation(prog, "u_stirs[0]"),
+        smeta: gl.getUniformLocation(prog, "u_smeta[0]")
     };
 
     // ---- palettes (pre-pastelised; picked per frame off data-dw-theme)
@@ -155,15 +176,15 @@ AURORA_FLUID_SCRIPT = """
     };
 
     // ---- 6 blobs on lissajous paths spanning the whole viewport.
-    // Periods of ~9-16s per axis: the flow reads within a second or
-    // two, while staying below "distracting screensaver" pace.
+    // Periods of ~6-11s per axis: at any moment the drift is visible
+    // to a passive glance, not just across before/after comparison.
     var BLOBS = [
-        {x: 0.15, y: 0.25, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.65, wy: 0.52, px: 0.0, py: 1.7},
-        {x: 0.85, y: 0.20, r: 0.55, ax: 0.17, ay: 0.18, wx: 0.50, wy: 0.72, px: 2.1, py: 0.6},
-        {x: 0.55, y: 0.55, r: 0.65, ax: 0.21, ay: 0.18, wx: 0.38, wy: 0.48, px: 4.0, py: 2.9},
-        {x: 0.15, y: 0.80, r: 0.55, ax: 0.14, ay: 0.17, wx: 0.60, wy: 0.42, px: 1.2, py: 5.1},
-        {x: 0.85, y: 0.85, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.55, wy: 0.66, px: 3.3, py: 1.1},
-        {x: 0.50, y: 0.05, r: 0.50, ax: 0.19, ay: 0.13, wx: 0.44, wy: 0.62, px: 5.4, py: 3.8}
+        {x: 0.15, y: 0.25, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.98, wy: 0.78, px: 0.0, py: 1.7},
+        {x: 0.85, y: 0.20, r: 0.55, ax: 0.17, ay: 0.18, wx: 0.75, wy: 1.08, px: 2.1, py: 0.6},
+        {x: 0.55, y: 0.55, r: 0.65, ax: 0.21, ay: 0.18, wx: 0.57, wy: 0.72, px: 4.0, py: 2.9},
+        {x: 0.15, y: 0.80, r: 0.55, ax: 0.14, ay: 0.17, wx: 0.90, wy: 0.63, px: 1.2, py: 5.1},
+        {x: 0.85, y: 0.85, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.82, wy: 0.99, px: 3.3, py: 1.1},
+        {x: 0.50, y: 0.05, r: 0.50, ax: 0.19, ay: 0.13, wx: 0.66, wy: 0.93, px: 5.4, py: 3.8}
     ];
     var blobArr = new Float32Array(18);
 
@@ -171,10 +192,32 @@ AURORA_FLUID_SCRIPT = """
     function now() { return (win.performance.now() - t0) / 1000; }
     // Smoothed cursor state: position lerps toward the raw pointer,
     // activity rises with movement speed and relaxes when the pointer
-    // rests — the fluid sways harder near a moving cursor, no trail.
+    // rests — the fluid sways harder near a moving cursor.
     var curX = 0.5, curY = 0.5, act = 0;
     var tgtX = 0.5, tgtY = 0.5;
     var lastX = null, lastY = null;
+    // Stir-impulse ring buffer: every ~30px of travel injects momentum
+    // (position + direction + strength) that the shader turns into a
+    // travelling drag + wake swirl, so strokes move the colours along.
+    var MAXS = 8;
+    var stirs = new Float32Array(MAXS * 4);
+    var smeta = new Float32Array(MAXS * 2);
+    var sBorn = new Float32Array(MAXS);
+    for (var i = 0; i < MAXS; i++) { sBorn[i] = -1e4; }
+    var stirIdx = 0;
+    var emitX = null, emitY = null;
+    function stirEmit(x, y, dx, dy, str) {
+        var w = Math.max(1, win.innerWidth), h = Math.max(1, win.innerHeight);
+        var len = Math.sqrt(dx * dx + dy * dy) || 1;
+        var i = stirIdx;
+        stirIdx = (stirIdx + 1) % MAXS;
+        stirs[i * 4] = x / w;
+        stirs[i * 4 + 1] = 1 - y / h;   // flip: gl_FragCoord y runs bottom-up
+        stirs[i * 4 + 2] = dx / len;
+        stirs[i * 4 + 3] = -(dy / len);
+        smeta[i * 2 + 1] = str;
+        sBorn[i] = now();
+    }
     function onPointerMove(e) {
         var x = e.clientX, y = e.clientY;
         var w = Math.max(1, win.innerWidth), h = Math.max(1, win.innerHeight);
@@ -182,6 +225,7 @@ AURORA_FLUID_SCRIPT = """
         tgtY = 1 - y / h;
         if (lastX === null) {
             lastX = x; lastY = y;
+            emitX = x; emitY = y;
             curX = tgtX; curY = tgtY;
             return;
         }
@@ -189,6 +233,13 @@ AURORA_FLUID_SCRIPT = """
         act = Math.min(1, act + Math.sqrt(dx * dx + dy * dy) / 130);
         lastX = x;
         lastY = y;
+        var ex = x - emitX, ey = y - emitY;
+        var ed2 = ex * ex + ey * ey;
+        if (ed2 > 900) {  // one impulse every ~30px of travel
+            stirEmit(x, y, ex, ey, Math.min(1, Math.sqrt(ed2) / 90 + 0.4));
+            emitX = x;
+            emitY = y;
+        }
     }
     function resize() {
         // Half-resolution render — it's a soft gradient, upscaling is free.
@@ -227,6 +278,11 @@ AURORA_FLUID_SCRIPT = """
         gl.uniform3f(loc.cursor, curX, curY, act);
         gl.uniform3fv(loc.colors, pal.colors);
         gl.uniform3fv(loc.blobs, blobArr);
+        for (var k = 0; k < MAXS; k++) {
+            smeta[k * 2] = t - sBorn[k];
+        }
+        gl.uniform4fv(loc.stirs, stirs);
+        gl.uniform2fv(loc.smeta, smeta);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         schedule();
     }

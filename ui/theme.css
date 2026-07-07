@@ -667,6 +667,9 @@ html[data-dw-empty="1"] [data-testid="stMainBlockContainer"]
     padding: 0 0 1.1rem !important;
     position: relative;
     z-index: 1;
+    /* Playing with the fluid background shouldn't select the title */
+    user-select: none;
+    -webkit-user-select: none;
 }
 .dw-welcome-title {
     font-size: 2rem !important;
