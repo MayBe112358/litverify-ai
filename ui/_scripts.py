@@ -12,7 +12,7 @@ AURORA_FLUID_SCRIPT = """
 (function () {
     var win = window.parent || window;
     var doc = win.document || document;
-    var version = "aurora-fluid-v5";
+    var version = "aurora-fluid-v7";
     if (win.__dwAurora && win.__dwAurora.version === version) {
         return;
     }
@@ -61,7 +61,7 @@ AURORA_FLUID_SCRIPT = """
         "uniform float u_time;",
         "uniform vec3 u_bg;",
         "uniform float u_strength;",
-        "uniform vec3 u_tint;",
+        "uniform vec3 u_cursor;",      // xy: lerped cursor (uv), z: activity 0..1
         "uniform vec3 u_colors[6];",
         "uniform vec3 u_blobs[6];",   // xy: centre (uv), z: radius
         "uniform vec4 u_ripples[24];", // xy: centre (uv), zw: stroke dir
@@ -73,23 +73,23 @@ AURORA_FLUID_SCRIPT = """
         "  p += 0.028 * vec2(",
         "    sin(p.y * 4.1 + u_time * 0.33) + 0.5 * sin(p.y * 7.3 - u_time * 0.21),",
         "    cos(p.x * 3.7 + u_time * 0.27) + 0.5 * cos(p.x * 6.2 + u_time * 0.16));",
-        //  Wake: dense, weak, wide ripples that swell in (smoothstep
-        //  envelope), spread slowly and push mostly along the stroke
-        //  direction — a viscous furrow rather than a chain of pops.
-        "  float sheen = 0.0;",
+        //  Parting, not rippling: the cursor carries a soft gaussian
+        //  push that shoves the gradient aside while it moves (fades in
+        //  with speed, relaxes when idle), and the recent path keeps a
+        //  faint furrow that closes right back. No rings, no tint —
+        //  the colours simply make way and flow together again.
+        "  vec2 dc = p - u_cursor.xy;",
+        "  dc.x *= aspect;",
+        "  float gc = exp(-dot(dc, dc) * 95.0);",
+        "  p += (0.060 * u_cursor.z * gc) * (dc / max(length(dc), 1e-4));",
         "  for (int i = 0; i < 24; i++) {",
         "    float age = u_ages[i];",
         "    float life = clamp(1.0 - age, 0.0, 1.0);",
-        "    float env = smoothstep(0.0, 0.18, age) * life * life;",
+        "    float env = smoothstep(0.0, 0.12, age) * life * life;",
         "    vec2 d = p - u_ripples[i].xy;",
         "    d.x *= aspect;",
-        "    float dist = length(d);",
-        "    float s = (dist - age * 0.13) * 7.0;",
-        "    float ring = exp(-s * s);",
-        "    float amp = 0.055 * env * ring;",
-        "    p += amp * 0.6 * (d / max(dist, 1e-4));",
-        "    p += amp * 1.1 * u_ripples[i].zw;",
-        "    sheen += env * ring;",
+        "    float g = exp(-dot(d, d) * 150.0);",
+        "    p += (0.030 * env * g) * (d / max(length(d), 1e-4));",
         "  }",
         "  vec2 q = vec2(p.x * aspect, p.y);",
         "  vec3 acc = vec3(0.0);",
@@ -103,11 +103,7 @@ AURORA_FLUID_SCRIPT = """
         "  }",
         "  vec3 grad = acc / max(wsum, 1e-4);",
         "  float cover = 1.0 - exp(-wsum * 2.2);",
-        "  vec3 col = mix(u_bg, grad, cover * u_strength);",
-        //  Sheen along the ripple rings: blend toward the accent colour,
-        //  like pigment stirred up where the cursor plucks the surface.
-        "  col = mix(col, u_tint, clamp(sheen, 0.0, 1.0) * 0.12);",
-        "  gl_FragColor = vec4(col, 1.0);",
+        "  gl_FragColor = vec4(mix(u_bg, grad, cover * u_strength), 1.0);",
         "}"
     ].join("\\n");
 
@@ -142,7 +138,7 @@ AURORA_FLUID_SCRIPT = """
         time: gl.getUniformLocation(prog, "u_time"),
         bg: gl.getUniformLocation(prog, "u_bg"),
         strength: gl.getUniformLocation(prog, "u_strength"),
-        tint: gl.getUniformLocation(prog, "u_tint"),
+        cursor: gl.getUniformLocation(prog, "u_cursor"),
         colors: gl.getUniformLocation(prog, "u_colors[0]"),
         blobs: gl.getUniformLocation(prog, "u_blobs[0]"),
         ripples: gl.getUniformLocation(prog, "u_ripples[0]"),
@@ -160,11 +156,11 @@ AURORA_FLUID_SCRIPT = """
         return out;
     }
     var LIGHT = {
-        bg: rgb("#FFFFFF"), strength: 0.95, tint: rgb("#7E7BFA"),
+        bg: rgb("#FFFFFF"), strength: 0.95,
         colors: flat(["#C5C4F8", "#FAD0E8", "#E3DAFC", "#C8EEF9", "#FFE4D8", "#D6F3E7"])
     };
     var DARK = {
-        bg: rgb("#212327"), strength: 0.85, tint: rgb("#9E9CFF"),
+        bg: rgb("#212327"), strength: 0.85,
         colors: flat(["#38366E", "#6D2F5B", "#47408C", "#175263", "#5A3153", "#1F5A50"])
     };
 
@@ -181,7 +177,7 @@ AURORA_FLUID_SCRIPT = """
 
     // ---- ripple ring buffer, fed by pointer strokes
     var MAXR = 24;
-    var RIPPLE_SECS = 1.8;
+    var RIPPLE_SECS = 1.2;
     var rip = new Float32Array(MAXR * 4);
     var ripBorn = new Float32Array(MAXR);
     var ages = new Float32Array(MAXR);
@@ -199,20 +195,32 @@ AURORA_FLUID_SCRIPT = """
         rip[i * 4 + 3] = dy;
         ripBorn[i] = now();
     }
+    // Smoothed cursor state for the parting field: position lerps toward
+    // the raw pointer, activity rises with movement and relaxes when the
+    // pointer rests — so the gradient eases apart and eases back.
+    var curX = 0.5, curY = 0.5, act = 0;
+    var tgtX = 0.5, tgtY = 0.5;
     var lastX = null, lastY = null;
     function onPointerMove(e) {
         var x = e.clientX, y = e.clientY;
-        if (lastX === null) { lastX = x; lastY = y; return; }
+        var w = Math.max(1, win.innerWidth), h = Math.max(1, win.innerHeight);
+        tgtX = x / w;
+        tgtY = 1 - y / h;
+        if (lastX === null) {
+            lastX = x; lastY = y;
+            curX = tgtX; curY = tgtY;
+            return;
+        }
         var dx = x - lastX, dy = y - lastY;
         var d2 = dx * dx + dy * dy;
-        if (d2 > 196) {  // one ripple every ~14px of travel
-            var len = Math.sqrt(d2);
-            emit(x, y, dx / len, -(dy / len));
+        act = Math.min(1, act + Math.sqrt(d2) / 130);
+        if (d2 > 196) {  // one furrow point every ~14px of travel
+            emit(x, y, 0, 0);
             lastX = x; lastY = y;
         }
     }
     function onPointerDown(e) {
-        emit(e.clientX, e.clientY, 0, 0);  // pure radial "poke"
+        emit(e.clientX, e.clientY, 0, 0);  // soft poke
     }
     function resize() {
         // Half-resolution render — it's a soft gradient, upscaling is free.
@@ -248,7 +256,10 @@ AURORA_FLUID_SCRIPT = """
         gl.uniform1f(loc.time, t);
         gl.uniform3f(loc.bg, pal.bg[0], pal.bg[1], pal.bg[2]);
         gl.uniform1f(loc.strength, pal.strength);
-        gl.uniform3f(loc.tint, pal.tint[0], pal.tint[1], pal.tint[2]);
+        curX += (tgtX - curX) * 0.16;
+        curY += (tgtY - curY) * 0.16;
+        act *= 0.94;
+        gl.uniform3f(loc.cursor, curX, curY, act);
         gl.uniform3fv(loc.colors, pal.colors);
         gl.uniform3fv(loc.blobs, blobArr);
         gl.uniform4fv(loc.ripples, rip);
