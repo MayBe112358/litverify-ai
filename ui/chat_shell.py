@@ -30,7 +30,8 @@ from services.agent_router import (
     report_from_dict,
     stream_chat,
 )
-from ui._scripts import DRAG_BRIDGE_SCRIPT
+from ui._scripts import AURORA_FLUID_SCRIPT, DRAG_BRIDGE_SCRIPT
+from ui.components import logo_data_uri
 from ui.verdict_card import render_verdict_card
 from utils.session import active_session, append_message
 
@@ -63,13 +64,36 @@ _ACCEPTED_TYPES = [
 # Welcome (empty) state — single welcome line; composer renders below
 # --------------------------------------------------------------------- #
 def _render_welcome() -> None:
+    # Aurora backdrop: AURORA_FLUID_SCRIPT drives a full-screen WebGL
+    # gradient field (liquid drift + cursor-stroke ripples). The four CSS
+    # blobs below are only the fallback when WebGL / JS is unavailable —
+    # the script hides them via html[data-dw-aurora-gl="1"].
     st.markdown(
         """
+        <div class="dw-aurora" aria-hidden="true">
+            <div class="dw-blob dw-blob-1"><i></i></div>
+            <div class="dw-blob dw-blob-2"><i></i></div>
+            <div class="dw-blob dw-blob-3"><i></i></div>
+            <div class="dw-blob dw-blob-4"><i></i></div>
+        </div>
         <div class="dw-welcome">
+            {logo_html}
             <h1 class="dw-welcome-title">我能帮你验证哪条引用？</h1>
         </div>
-        """,
+        """.format(logo_html=_welcome_logo_html()),
         unsafe_allow_html=True,
+    )
+    st.iframe(AURORA_FLUID_SCRIPT, height=1)
+
+
+def _welcome_logo_html() -> str:
+    """Logo + brand line shown above the welcome title (empty state)."""
+    uri = logo_data_uri()
+    if not uri:
+        return ""
+    return (
+        f'<img class="dw-welcome-logo" src="{uri}" alt="GG Bond" />'
+        '<div class="dw-welcome-brand">GG Bond</div>'
     )
 
 
@@ -361,7 +385,7 @@ def _build_chart_fig(df: pd.DataFrame, spec: dict[str, Any]):
     return px.bar(plot_df, x=x, y=value_col, color=color, barmode="group", title=title)
 
 
-def _render_chat(data: dict[str, Any], idx: int) -> None:
+def _render_chat(data: dict[str, Any], _idx: int) -> None:
     """Replay a stored chat turn: the answer is already rendered from
     ``message['text']``; here we re-attach the foldable thinking trace if the
     streaming pass captured one."""
@@ -577,7 +601,7 @@ def _render_plus_uploader() -> None:
         st.rerun()
 
 
-def _composer(is_empty: bool) -> None:
+def _composer() -> None:
     """Render the composer pill: stage chips + ＋ upload button + chat_input.
 
     Layout (empty vs docked) is driven by ``html[data-dw-empty]`` and the
@@ -673,7 +697,7 @@ def render_chat_shell() -> None:
         # Spacer so the last message isn't hidden behind the fixed composer
         st.markdown('<div style="height:140px;"></div>', unsafe_allow_html=True)
 
-    _composer(is_empty=is_empty)
+    _composer()
 
 
 def _stream_pending_chat() -> None:

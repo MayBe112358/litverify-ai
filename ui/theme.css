@@ -665,6 +665,8 @@ html[data-dw-empty="1"] [data-testid="stMainBlockContainer"]
     text-align: center !important;
     width: 100% !important;
     padding: 0 0 1.1rem !important;
+    position: relative;
+    z-index: 1;
 }
 .dw-welcome-title {
     font-size: 2rem !important;
@@ -675,6 +677,148 @@ html[data-dw-empty="1"] [data-testid="stMainBlockContainer"]
     line-height: 1.2 !important;
     text-align: center !important;
     width: 100% !important;
+}
+.dw-welcome-logo {
+    display: block;
+    height: 104px;
+    width: auto;
+    margin: 0 auto 0.6rem;
+    filter: drop-shadow(0 8px 22px rgba(15, 23, 42, 0.20));
+    animation: dw-logo-float 6s ease-in-out infinite;
+    user-select: none;
+    pointer-events: none;
+}
+.dw-welcome-brand {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    color: var(--dw-text-soft);
+    text-align: center;
+    margin: 0 auto 1.5rem;
+}
+@keyframes dw-logo-float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-7px); }
+}
+
+/* =========== Aurora backdrop (empty state only) ===========
+   The homepage gradient is a full-screen WebGL canvas injected by
+   AURORA_FLUID_SCRIPT (#dw-aurora-canvas): six colour blobs melt into
+   a liquid gradient that fills the whole blank area, and cursor
+   strokes pluck ripples through it. The .dw-blob layer below is the
+   FALLBACK for when JS / WebGL is unavailable — the script hides it
+   by setting html[data-dw-aurora-gl="1"] once the canvas is live.
+   Both layers are gated on data-dw-empty so they never bleed into a
+   conversation. */
+.dw-aurora-canvas {
+    display: none;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 0;
+    pointer-events: none;
+}
+html[data-dw-empty="1"] .dw-aurora-canvas {
+    display: block;
+}
+html[data-dw-aurora-gl="1"] .dw-aurora .dw-blob {
+    display: none;
+}
+.dw-aurora {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+html[data-dw-empty="1"] .dw-aurora {
+    display: block;
+}
+.dw-aurora .dw-blob {
+    position: absolute;
+    width: 44vmax;
+    height: 44vmax;
+}
+.dw-aurora .dw-blob i {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%, var(--blob-c) 0%, transparent 66%);
+    filter: blur(64px);
+    opacity: 0.45;
+    will-change: transform;
+    animation: var(--blob-anim) ease-in-out infinite alternate;
+}
+/* Indigo — top left */
+.dw-blob-1 {
+    top: -14vmax;
+    left: -12vmax;
+}
+.dw-blob-1 i {
+    --blob-c: color-mix(in srgb, var(--dw-primary) 75%, transparent);
+    --blob-anim: dw-aurora-drift-a 21s;
+}
+/* Pink — top right */
+.dw-blob-2 {
+    top: -16vmax;
+    right: -12vmax;
+    width: 40vmax;
+    height: 40vmax;
+}
+.dw-blob-2 i {
+    --blob-c: color-mix(in srgb, #F472B6 70%, transparent);
+    --blob-anim: dw-aurora-drift-b 26s;
+}
+/* Cyan — bottom left */
+.dw-blob-3 {
+    bottom: -18vmax;
+    left: 2vw;
+    width: 38vmax;
+    height: 38vmax;
+}
+.dw-blob-3 i {
+    --blob-c: color-mix(in srgb, #22D3EE 62%, transparent);
+    --blob-anim: dw-aurora-drift-c 31s;
+}
+/* Violet — bottom right */
+.dw-blob-4 {
+    bottom: -20vmax;
+    right: -10vmax;
+}
+.dw-blob-4 i {
+    --blob-c: color-mix(in srgb, #A78BFA 72%, transparent);
+    --blob-anim: dw-aurora-drift-b 24s;
+}
+/* Dark theme: same hues read hotter on a dark canvas — pull opacity down */
+html[data-dw-theme="dark"] .dw-aurora .dw-blob i {
+    opacity: 0.32;
+}
+@keyframes dw-aurora-drift-a {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(6vmax, -4vmax, 0) scale(1.14); }
+    100% { transform: translate3d(-4vmax, 5vmax, 0) scale(0.9); }
+}
+@keyframes dw-aurora-drift-b {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(-5vmax, 6vmax, 0) scale(0.88); }
+    100% { transform: translate3d(4vmax, -5vmax, 0) scale(1.12); }
+}
+@keyframes dw-aurora-drift-c {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(5vmax, 3vmax, 0) scale(1.1); }
+    100% { transform: translate3d(-6vmax, -4vmax, 0) scale(0.94); }
+}
+/* Reduced motion: the fluid script bails out on its own (matchMedia
+   check) — this kills the fallback drift and belts-and-braces the
+   canvas in case an old script instance is still around. */
+@media (prefers-reduced-motion: reduce) {
+    .dw-aurora .dw-blob i { animation: none; }
+    .dw-aurora-canvas { display: none !important; }
+    html[data-dw-aurora-gl="1"] .dw-aurora .dw-blob { display: block; }
+    .dw-welcome-logo { animation: none; }
 }
 
 /* In empty state, vertically center welcome + composer in the
@@ -713,6 +857,10 @@ html[data-dw-empty="1"] [data-testid="stBottom"] {
    Style hook: st.container(key="composer_shell"). Clean single pill,
    no border — depth comes from a soft shadow. */
 [class*="st-key-composer_shell"] {
+    /* relative + z-index lift the pill above the aurora backdrop in the
+       empty state; the conversation-state rule overrides to fixed/50. */
+    position: relative;
+    z-index: 1;
     background: var(--dw-composer-bg) !important;
     border: 0 !important;
     border-radius: 28px !important;

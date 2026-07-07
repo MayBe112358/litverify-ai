@@ -7,6 +7,281 @@ lines of Python noise on either side.
 from __future__ import annotations
 
 
+AURORA_FLUID_SCRIPT = """
+<script>
+(function () {
+    var win = window.parent || window;
+    var doc = win.document || document;
+    var version = "aurora-fluid-v5";
+    if (win.__dwAurora && win.__dwAurora.version === version) {
+        return;
+    }
+    if (win.__dwAurora && win.__dwAurora.cleanup) {
+        try { win.__dwAurora.cleanup(); } catch (e) {}
+    }
+    var root = doc.documentElement;
+    // Clear leftovers from the retired v1 cursor-glow bridge.
+    ["--dw-aur-x", "--dw-aur-y", "--dw-aur-nx", "--dw-aur-ny"].forEach(function (k) {
+        try { root.style.removeProperty(k); } catch (e) {}
+    });
+    root.removeAttribute("data-dw-aurora-active");
+
+    // Reduced motion → stay on the static CSS fallback blobs.
+    if (win.matchMedia && win.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        return;
+    }
+
+    var stale = doc.getElementById("dw-aurora-canvas");
+    if (stale && stale.parentNode) { stale.parentNode.removeChild(stale); }
+    var canvas = doc.createElement("canvas");
+    canvas.id = "dw-aurora-canvas";
+    canvas.className = "dw-aurora-canvas";
+    doc.body.appendChild(canvas);
+
+    var gl = null;
+    try {
+        gl = canvas.getContext("webgl", {
+            alpha: false, antialias: false, depth: false,
+            stencil: false, powerPreference: "low-power"
+        }) || canvas.getContext("experimental-webgl");
+    } catch (e) { gl = null; }
+    if (!gl) {
+        if (canvas.parentNode) { canvas.parentNode.removeChild(canvas); }
+        return; // CSS fallback blobs take over
+    }
+
+    // ---- shaders: 6 drifting colour blobs blended into a full-screen
+    // gradient, domain-warped for the liquid feel; up to 16 mouse-stroke
+    // ripples displace the sampling coords so the colours get "plucked"
+    // aside where the cursor passes, then settle back.
+    var VSH = "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}";
+    var FSH = [
+        "precision mediump float;",
+        "uniform vec2 u_res;",
+        "uniform float u_time;",
+        "uniform vec3 u_bg;",
+        "uniform float u_strength;",
+        "uniform vec3 u_tint;",
+        "uniform vec3 u_colors[6];",
+        "uniform vec3 u_blobs[6];",   // xy: centre (uv), z: radius
+        "uniform vec4 u_ripples[24];", // xy: centre (uv), zw: stroke dir
+        "uniform float u_ages[24];",   // 0..1 alive, >=1 dead
+        "void main() {",
+        "  vec2 uv = gl_FragCoord.xy / u_res;",
+        "  float aspect = u_res.x / u_res.y;",
+        "  vec2 p = uv;",
+        "  p += 0.028 * vec2(",
+        "    sin(p.y * 4.1 + u_time * 0.33) + 0.5 * sin(p.y * 7.3 - u_time * 0.21),",
+        "    cos(p.x * 3.7 + u_time * 0.27) + 0.5 * cos(p.x * 6.2 + u_time * 0.16));",
+        //  Wake: dense, weak, wide ripples that swell in (smoothstep
+        //  envelope), spread slowly and push mostly along the stroke
+        //  direction — a viscous furrow rather than a chain of pops.
+        "  float sheen = 0.0;",
+        "  for (int i = 0; i < 24; i++) {",
+        "    float age = u_ages[i];",
+        "    float life = clamp(1.0 - age, 0.0, 1.0);",
+        "    float env = smoothstep(0.0, 0.18, age) * life * life;",
+        "    vec2 d = p - u_ripples[i].xy;",
+        "    d.x *= aspect;",
+        "    float dist = length(d);",
+        "    float s = (dist - age * 0.13) * 7.0;",
+        "    float ring = exp(-s * s);",
+        "    float amp = 0.055 * env * ring;",
+        "    p += amp * 0.6 * (d / max(dist, 1e-4));",
+        "    p += amp * 1.1 * u_ripples[i].zw;",
+        "    sheen += env * ring;",
+        "  }",
+        "  vec2 q = vec2(p.x * aspect, p.y);",
+        "  vec3 acc = vec3(0.0);",
+        "  float wsum = 0.0;",
+        "  for (int i = 0; i < 6; i++) {",
+        "    vec2 bp = vec2(u_blobs[i].x * aspect, u_blobs[i].y);",
+        "    float dd = length(q - bp) / u_blobs[i].z;",
+        "    float w = exp(-dd * dd * 2.0);",
+        "    acc += w * u_colors[i];",
+        "    wsum += w;",
+        "  }",
+        "  vec3 grad = acc / max(wsum, 1e-4);",
+        "  float cover = 1.0 - exp(-wsum * 2.2);",
+        "  vec3 col = mix(u_bg, grad, cover * u_strength);",
+        //  Sheen along the ripple rings: blend toward the accent colour,
+        //  like pigment stirred up where the cursor plucks the surface.
+        "  col = mix(col, u_tint, clamp(sheen, 0.0, 1.0) * 0.12);",
+        "  gl_FragColor = vec4(col, 1.0);",
+        "}"
+    ].join("\\n");
+
+    function compile(type, src) {
+        var sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { return null; }
+        return sh;
+    }
+    var vs = compile(gl.VERTEX_SHADER, VSH);
+    var fs = compile(gl.FRAGMENT_SHADER, FSH);
+    var prog = vs && fs ? gl.createProgram() : null;
+    if (prog) {
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+    }
+    if (!prog || !gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        if (canvas.parentNode) { canvas.parentNode.removeChild(canvas); }
+        return;
+    }
+    gl.useProgram(prog);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    var aLoc = gl.getAttribLocation(prog, "a");
+    gl.enableVertexAttribArray(aLoc);
+    gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+    var loc = {
+        res: gl.getUniformLocation(prog, "u_res"),
+        time: gl.getUniformLocation(prog, "u_time"),
+        bg: gl.getUniformLocation(prog, "u_bg"),
+        strength: gl.getUniformLocation(prog, "u_strength"),
+        tint: gl.getUniformLocation(prog, "u_tint"),
+        colors: gl.getUniformLocation(prog, "u_colors[0]"),
+        blobs: gl.getUniformLocation(prog, "u_blobs[0]"),
+        ripples: gl.getUniformLocation(prog, "u_ripples[0]"),
+        ages: gl.getUniformLocation(prog, "u_ages[0]")
+    };
+
+    // ---- palettes (pre-pastelised; picked per frame off data-dw-theme)
+    function rgb(hex) {
+        var n = parseInt(hex.slice(1), 16);
+        return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    }
+    function flat(hexes) {
+        var out = new Float32Array(hexes.length * 3);
+        hexes.forEach(function (h, i) { out.set(rgb(h), i * 3); });
+        return out;
+    }
+    var LIGHT = {
+        bg: rgb("#FFFFFF"), strength: 0.95, tint: rgb("#7E7BFA"),
+        colors: flat(["#C5C4F8", "#FAD0E8", "#E3DAFC", "#C8EEF9", "#FFE4D8", "#D6F3E7"])
+    };
+    var DARK = {
+        bg: rgb("#212327"), strength: 0.85, tint: rgb("#9E9CFF"),
+        colors: flat(["#38366E", "#6D2F5B", "#47408C", "#175263", "#5A3153", "#1F5A50"])
+    };
+
+    // ---- 6 blobs on slow lissajous paths spanning the whole viewport
+    var BLOBS = [
+        {x: 0.15, y: 0.25, r: 0.60, ax: 0.10, ay: 0.08, wx: 0.11, wy: 0.09, px: 0.0, py: 1.7},
+        {x: 0.85, y: 0.20, r: 0.55, ax: 0.09, ay: 0.10, wx: 0.08, wy: 0.12, px: 2.1, py: 0.6},
+        {x: 0.55, y: 0.55, r: 0.65, ax: 0.12, ay: 0.10, wx: 0.06, wy: 0.08, px: 4.0, py: 2.9},
+        {x: 0.15, y: 0.80, r: 0.55, ax: 0.08, ay: 0.09, wx: 0.10, wy: 0.07, px: 1.2, py: 5.1},
+        {x: 0.85, y: 0.85, r: 0.60, ax: 0.10, ay: 0.08, wx: 0.09, wy: 0.11, px: 3.3, py: 1.1},
+        {x: 0.50, y: 0.05, r: 0.50, ax: 0.11, ay: 0.07, wx: 0.07, wy: 0.10, px: 5.4, py: 3.8}
+    ];
+    var blobArr = new Float32Array(18);
+
+    // ---- ripple ring buffer, fed by pointer strokes
+    var MAXR = 24;
+    var RIPPLE_SECS = 1.8;
+    var rip = new Float32Array(MAXR * 4);
+    var ripBorn = new Float32Array(MAXR);
+    var ages = new Float32Array(MAXR);
+    for (var i = 0; i < MAXR; i++) { ripBorn[i] = -1e4; }
+    var ripIdx = 0;
+    var t0 = win.performance.now();
+    function now() { return (win.performance.now() - t0) / 1000; }
+    function emit(x, y, dx, dy) {
+        var w = Math.max(1, win.innerWidth), h = Math.max(1, win.innerHeight);
+        var i = ripIdx;
+        ripIdx = (ripIdx + 1) % MAXR;
+        rip[i * 4] = x / w;
+        rip[i * 4 + 1] = 1 - y / h;   // flip: gl_FragCoord y runs bottom-up
+        rip[i * 4 + 2] = dx;
+        rip[i * 4 + 3] = dy;
+        ripBorn[i] = now();
+    }
+    var lastX = null, lastY = null;
+    function onPointerMove(e) {
+        var x = e.clientX, y = e.clientY;
+        if (lastX === null) { lastX = x; lastY = y; return; }
+        var dx = x - lastX, dy = y - lastY;
+        var d2 = dx * dx + dy * dy;
+        if (d2 > 196) {  // one ripple every ~14px of travel
+            var len = Math.sqrt(d2);
+            emit(x, y, dx / len, -(dy / len));
+            lastX = x; lastY = y;
+        }
+    }
+    function onPointerDown(e) {
+        emit(e.clientX, e.clientY, 0, 0);  // pure radial "poke"
+    }
+    function resize() {
+        // Half-resolution render — it's a soft gradient, upscaling is free.
+        canvas.width = Math.max(1, Math.round(win.innerWidth * 0.5));
+        canvas.height = Math.max(1, Math.round(win.innerHeight * 0.5));
+    }
+
+    var rafId = null, timerId = null, stopped = false;
+    function schedule() {
+        if (!stopped) { rafId = win.requestAnimationFrame(frame); }
+    }
+    function frame() {
+        rafId = null;
+        if (stopped) { return; }
+        // Not on the empty home / tab hidden → idle-poll instead of drawing.
+        if (doc.hidden || root.getAttribute("data-dw-empty") !== "1") {
+            timerId = win.setTimeout(schedule, 300);
+            return;
+        }
+        var t = now();
+        var pal = root.getAttribute("data-dw-theme") === "dark" ? DARK : LIGHT;
+        for (var i = 0; i < 6; i++) {
+            var b = BLOBS[i];
+            blobArr[i * 3] = b.x + b.ax * Math.sin(t * b.wx + b.px);
+            blobArr[i * 3 + 1] = b.y + b.ay * Math.cos(t * b.wy + b.py);
+            blobArr[i * 3 + 2] = b.r;
+        }
+        for (var j = 0; j < MAXR; j++) {
+            ages[j] = (t - ripBorn[j]) / RIPPLE_SECS;
+        }
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.uniform2f(loc.res, canvas.width, canvas.height);
+        gl.uniform1f(loc.time, t);
+        gl.uniform3f(loc.bg, pal.bg[0], pal.bg[1], pal.bg[2]);
+        gl.uniform1f(loc.strength, pal.strength);
+        gl.uniform3f(loc.tint, pal.tint[0], pal.tint[1], pal.tint[2]);
+        gl.uniform3fv(loc.colors, pal.colors);
+        gl.uniform3fv(loc.blobs, blobArr);
+        gl.uniform4fv(loc.ripples, rip);
+        gl.uniform1fv(loc.ages, ages);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        schedule();
+    }
+
+    doc.addEventListener("pointermove", onPointerMove, { passive: true });
+    doc.addEventListener("pointerdown", onPointerDown, { passive: true });
+    win.addEventListener("resize", resize);
+    resize();
+    root.setAttribute("data-dw-aurora-gl", "1");  // hides the CSS fallback blobs
+    schedule();
+
+    win.__dwAurora = {
+        version: version,
+        cleanup: function () {
+            stopped = true;
+            if (rafId !== null) { win.cancelAnimationFrame(rafId); }
+            if (timerId !== null) { win.clearTimeout(timerId); }
+            doc.removeEventListener("pointermove", onPointerMove);
+            doc.removeEventListener("pointerdown", onPointerDown);
+            win.removeEventListener("resize", resize);
+            root.removeAttribute("data-dw-aurora-gl");
+            if (canvas.parentNode) { canvas.parentNode.removeChild(canvas); }
+        }
+    };
+})();
+</script>
+"""
+
+
 DRAG_BRIDGE_SCRIPT = """
 <script>
 (function () {
