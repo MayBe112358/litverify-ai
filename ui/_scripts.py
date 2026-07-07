@@ -12,7 +12,7 @@ AURORA_FLUID_SCRIPT = """
 (function () {
     var win = window.parent || window;
     var doc = win.document || document;
-    var version = "aurora-fluid-v8";
+    var version = "aurora-fluid-v9";
     if (win.__dwAurora && win.__dwAurora.version === version) {
         return;
     }
@@ -77,10 +77,10 @@ AURORA_FLUID_SCRIPT = """
         //  Liquid undulation — two wave octaves, fast enough to be
         //  clearly alive, and amplified around the cursor so a stroke
         //  reads as extra turbulence in the fluid, not a drawn mark.
-        "  float wa = 0.045 * (1.0 + 1.8 * stir);",
+        "  float wa = 0.07 * (1.0 + 1.8 * stir);",
         "  p += wa * vec2(",
-        "    sin(p.y * 3.4 + u_time * 0.70) + 0.5 * sin(p.y * 6.4 - u_time * 0.47),",
-        "    cos(p.x * 3.1 + u_time * 0.62) + 0.5 * cos(p.x * 5.6 + u_time * 0.40));",
+        "    sin(p.y * 3.4 + u_time * 1.05) + 0.5 * sin(p.y * 6.4 - u_time * 0.70),",
+        "    cos(p.x * 3.1 + u_time * 0.92) + 0.5 * cos(p.x * 5.6 + u_time * 0.60));",
         //  Gentle parting so the colours also make way under the pointer.
         "  p += (0.045 * stir) * (dc / max(length(dc), 1e-4));",
         "  vec2 q = vec2(p.x * aspect, p.y);",
@@ -146,8 +146,8 @@ AURORA_FLUID_SCRIPT = """
         return out;
     }
     var LIGHT = {
-        bg: rgb("#FFFFFF"), strength: 0.95,
-        colors: flat(["#C5C4F8", "#FAD0E8", "#E3DAFC", "#C8EEF9", "#FFE4D8", "#D6F3E7"])
+        bg: rgb("#FFFFFF"), strength: 1.0,
+        colors: flat(["#A5A3F5", "#F8B4D9", "#CDB9F8", "#A8E4F5", "#FFCDB0", "#B0E9D3"])
     };
     var DARK = {
         bg: rgb("#212327"), strength: 0.85,
@@ -155,15 +155,15 @@ AURORA_FLUID_SCRIPT = """
     };
 
     // ---- 6 blobs on lissajous paths spanning the whole viewport.
-    // Periods of ~15-30s per axis: slow enough to stay calm, fast
-    // enough that the flow is clearly visible within a few seconds.
+    // Periods of ~9-16s per axis: the flow reads within a second or
+    // two, while staying below "distracting screensaver" pace.
     var BLOBS = [
-        {x: 0.15, y: 0.25, r: 0.60, ax: 0.14, ay: 0.11, wx: 0.38, wy: 0.30, px: 0.0, py: 1.7},
-        {x: 0.85, y: 0.20, r: 0.55, ax: 0.13, ay: 0.14, wx: 0.28, wy: 0.42, px: 2.1, py: 0.6},
-        {x: 0.55, y: 0.55, r: 0.65, ax: 0.17, ay: 0.14, wx: 0.21, wy: 0.28, px: 4.0, py: 2.9},
-        {x: 0.15, y: 0.80, r: 0.55, ax: 0.11, ay: 0.13, wx: 0.35, wy: 0.24, px: 1.2, py: 5.1},
-        {x: 0.85, y: 0.85, r: 0.60, ax: 0.14, ay: 0.11, wx: 0.31, wy: 0.38, px: 3.3, py: 1.1},
-        {x: 0.50, y: 0.05, r: 0.50, ax: 0.15, ay: 0.10, wx: 0.24, wy: 0.35, px: 5.4, py: 3.8}
+        {x: 0.15, y: 0.25, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.65, wy: 0.52, px: 0.0, py: 1.7},
+        {x: 0.85, y: 0.20, r: 0.55, ax: 0.17, ay: 0.18, wx: 0.50, wy: 0.72, px: 2.1, py: 0.6},
+        {x: 0.55, y: 0.55, r: 0.65, ax: 0.21, ay: 0.18, wx: 0.38, wy: 0.48, px: 4.0, py: 2.9},
+        {x: 0.15, y: 0.80, r: 0.55, ax: 0.14, ay: 0.17, wx: 0.60, wy: 0.42, px: 1.2, py: 5.1},
+        {x: 0.85, y: 0.85, r: 0.60, ax: 0.18, ay: 0.14, wx: 0.55, wy: 0.66, px: 3.3, py: 1.1},
+        {x: 0.50, y: 0.05, r: 0.50, ax: 0.19, ay: 0.13, wx: 0.44, wy: 0.62, px: 5.4, py: 3.8}
     ];
     var blobArr = new Float32Array(18);
 
