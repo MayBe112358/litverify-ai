@@ -1103,17 +1103,21 @@ html[data-dw-theme="dark"] [class*="st-key-composer_plus"]
     background: rgba(255, 255, 255, 0.16) !important;
 }
 /* The "+" is drawn with two currentColor strokes instead of a text
-   glyph: the fullwidth ＋ character carries font-dependent side
-   bearings that made it sit visibly off the circle's centre. */
+   glyph (fullwidth ＋ has font side-bearings that sat off-centre).
+   Absolutely positioned at the circle's geometric centre so no flex
+   sibling, hidden uploader chrome, or inset shadow can nudge it. */
 [class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"]::before {
     content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
     width: 14px;
     height: 14px;
-    flex: 0 0 auto;
+    margin: -7px 0 0 -7px;
     color: var(--dw-text);
     background:
-        linear-gradient(currentColor, currentColor) center / 14px 1.6px no-repeat,
-        linear-gradient(currentColor, currentColor) center / 1.6px 14px no-repeat;
+        linear-gradient(currentColor, currentColor) center / 14px 2px no-repeat,
+        linear-gradient(currentColor, currentColor) center / 2px 14px no-repeat;
     pointer-events: none;
 }
 [class*="st-key-composer_plus"]
