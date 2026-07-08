@@ -24,7 +24,12 @@ from typing import Any, Iterator
 
 import pandas as pd
 
-from config.prompts import BATCH_NARRATE_PROMPT, CHART_CODE_PROMPT, CHAT_SYSTEM_PROMPT
+from config.prompts import (
+    BATCH_NARRATE_PROMPT,
+    CHART_CODE_PROMPT,
+    CHAT_SYSTEM_PROMPT,
+    FAKE_NARRATE_PROMPT,
+)
 from config.settings import settings
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
@@ -275,7 +280,7 @@ def dispatch(
         if mode == "verify_batch":
             return _run_verify_batch(text, files, on_progress=on_progress)
         if mode == "fake_analysis":
-            return _run_fake_analysis(files, history)
+            return _run_fake_analysis(text, files, history)
         if mode == "chart":
             return _run_chart(text, files, history)
         if mode == "ocr":
@@ -444,12 +449,17 @@ def _narrate_batch_results(
 # fake_analysis
 # --------------------------------------------------------------------- #
 def _run_fake_analysis(
+    text: str,
     files: list[dict[str, Any]],
     history: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Run fake-pattern analysis on either an uploaded result CSV or the
     most recent batch result still in chat history. Falls back to the
-    persistent SQLite history if neither is present."""
+    persistent SQLite history if neither is present.
+
+    回复文案不再是写死的模板：带着用户的原话让 DeepSeek 针对问题作答
+    （此前不管问"特征条数"还是"学科分布"都返回同一份固定摘要）。AI 不可用
+    时回退到确定性模板，模板里也带上每类特征的条数。"""
     df = _df_from_files_or_history(files, history)
     if df is None or df.empty:
         return _error(
@@ -459,15 +469,7 @@ def _run_fake_analysis(
         )
 
     stats = build_fake_pattern_report(df)
-    bullets = "\n".join(f"- {p}" for p in stats.get("top_patterns", []) or ["暂未发现强模式特征。"])
-    summary = (
-        f"对 **{stats['total']}** 条引用做了虚假特征聚类，"
-        f"高风险（可疑/虚假）占比 **{stats['fake_like_ratio']:.0%}**。\n\n"
-        f"**Top 失效规则：**\n{bullets}"
-    )
-    group_md = _format_group_rates(stats.get("groups") or {})
-    if group_md:
-        summary += f"\n\n{group_md}"
+    summary = _narrate_fake_analysis(stats, text) or _fake_analysis_fallback(stats)
     return {
         "role": "assistant",
         "kind": "fake_analysis",
@@ -478,6 +480,53 @@ def _run_fake_analysis(
             "rows": df_to_json_safe_records(df.head(200)),
         },
     }
+
+
+def _narrate_fake_analysis(stats: dict[str, Any], user_text: str) -> str | None:
+    """Ask DeepSeek to answer the user's actual question over the stats.
+
+    Returns None when AI is unavailable/fails so the caller falls back to the
+    deterministic template."""
+    if not runtime_api_key():
+        return None
+    payload = {
+        "用户问题": (user_text or "").strip() or "总结这批结果的虚假特征规律。",
+        "统计数据": stats,
+    }
+    try:
+        client = DeepSeekClient(timeout=45)
+        return client.chat(
+            messages=[
+                {"role": "system", "content": FAKE_NARRATE_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+            ],
+            temperature=0.4,
+            top_p=0.9,
+            max_tokens=3000,
+            retries=0,
+        ).strip() or None
+    except Exception:  # noqa: BLE001 - any failure → deterministic fallback
+        return None
+
+
+def _fake_analysis_fallback(stats: dict[str, Any]) -> str:
+    """Deterministic summary used when AI is off — now with per-feature counts."""
+    pattern_counts = stats.get("pattern_counts") or []
+    if pattern_counts:
+        bullets = "\n".join(
+            f"- {p['pattern']}：{p['count']} 条" for p in pattern_counts[:8]
+        )
+    else:
+        bullets = "- 暂未发现强模式特征。"
+    summary = (
+        f"对 **{stats['total']}** 条引用做了虚假特征聚类，"
+        f"高风险（可疑/虚假）占比 **{stats['fake_like_ratio']:.0%}**。\n\n"
+        f"**各类虚假特征命中条数：**\n{bullets}"
+    )
+    group_md = _format_group_rates(stats.get("groups") or {})
+    if group_md:
+        summary += f"\n\n{group_md}"
+    return summary
 
 
 # --------------------------------------------------------------------- #

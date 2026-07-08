@@ -124,5 +124,7 @@ def build_fake_pattern_report(df: pd.DataFrame) -> dict:
         "fake_like_ratio": fake_like / total if total else 0,
         "verdict_counts": counts.to_dict(),
         "top_patterns": top_patterns,
+        # 每类特征命中的条数（按条数降序），供「每个特征多少条」类问题使用
+        "pattern_counts": failures.to_dict("records") if not failures.empty else [],
         "groups": group_fake_rates(df),
     }
