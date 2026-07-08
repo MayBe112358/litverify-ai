@@ -417,11 +417,23 @@ def _narrate_batch_results(
                 }
             )
 
+    # 分组统计（按模型/领域/主题的虚假率 + 每类特征条数），让"统计各学科
+    # 虚假率"这类随文件附带的问题有数据可答，而不是被固定结构的总结盖掉。
+    try:
+        pattern_report = build_fake_pattern_report(result_df)
+        group_stats: dict[str, Any] | None = {
+            "分组虚假率": pattern_report.get("groups"),
+            "每类特征条数": pattern_report.get("pattern_counts"),
+        }
+    except Exception:  # noqa: BLE001 - grouping is best-effort grounding
+        group_stats = None
+
     payload = {
         "来源": source_label,
         "总数": int(len(result_df)),
         "统计": {str(k): int(v) for k, v in counts.items()},
         "用户说明": (user_text or "").strip() or None,
+        "分组统计": group_stats,
         "问题条目": problems,
         "问题条目是否截断": bool(
             "verdict" in result_df.columns
