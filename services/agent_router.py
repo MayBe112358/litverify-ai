@@ -441,7 +441,9 @@ def _narrate_batch_results(
         ),
     }
     try:
-        client = DeepSeekClient(timeout=30)
+        # 90s：思考型模型读完 200 条的分组统计再写总结，30s 在云端经常超时，
+        # 一超时就静默回退成呆板的计数模板，用户的问题又没人答了。
+        client = DeepSeekClient(timeout=90)
         return client.chat(
             messages=[
                 {"role": "system", "content": BATCH_NARRATE_PROMPT},
@@ -506,7 +508,7 @@ def _narrate_fake_analysis(stats: dict[str, Any], user_text: str) -> str | None:
         "统计数据": stats,
     }
     try:
-        client = DeepSeekClient(timeout=45)
+        client = DeepSeekClient(timeout=90)
         return client.chat(
             messages=[
                 {"role": "system", "content": FAKE_NARRATE_PROMPT},

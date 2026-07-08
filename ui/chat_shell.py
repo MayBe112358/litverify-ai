@@ -654,25 +654,42 @@ def _composer() -> None:
 
     sess = active_session()
     history = sess["messages"][:-1]
-    # Decide the action here, where the file *bytes* are still in hand. Chat is
-    # deferred to a streaming render on the next run (so the answer types out
-    # live); every other tool keeps the spinner + full-render path.
+    # Decide the action here, where the file *bytes* are still in hand — then
+    # ALWAYS defer the actual work to the next run via a pending stash.
+    # 之前工具类任务直接在本次运行里执行：用户气泡要等（长达几分钟的）批量
+    # 验证跑完才显示，界面看起来像"没发出去"，用户再按一次回车就会中断
+    # 第一轮并重复发送。先 rerun 把气泡和进度条落到对话流里，再干活。
     mode = infer_mode(text, files, history)
     if mode == "chat":
         st.session_state["_pending_chat"] = {"text": text, "files": files}
-        _clear_pending_files()
-        st.rerun()
+    else:
+        st.session_state["_pending_tool"] = {"mode": mode, "text": text, "files": files}
+    _clear_pending_files()
+    st.rerun()
+
+
+def _run_pending_tool() -> None:
+    """Execute a deferred tool dispatch stashed by ``_composer``.
+
+    Runs in the chat-flow position right after the stored messages, so the
+    batch progress bar / spinner shows up where the reply will land."""
+    pending = st.session_state.pop("_pending_tool", None)
+    if not pending:
+        return
+    sess = active_session()
+    history = sess["messages"][:-1]  # exclude the user turn we're answering
+    mode = pending.get("mode") or "chat"
+    text = pending.get("text") or ""
+    files = pending.get("files") or []
 
     if mode == "verify_batch":
         # 200 条要跑几分钟，干转的 spinner 会让人以为应用卡死——批量验证
-        # 换成带条数和预计剩余时间的实时进度条。
+        # 用带条数和预计剩余时间的实时进度条。
         assistant_msg = _dispatch_batch_with_progress(text, files, history)
     else:
         with st.spinner("🤖  正在理解你的需求…"):
             assistant_msg = dispatch(mode, text, files, history)
     append_message(assistant_msg)
-
-    _clear_pending_files()
     st.rerun()
 
 
@@ -726,6 +743,10 @@ def render_chat_shell() -> None:
         # A pending chat reply streams in here — right after the last stored
         # message, before the spacer — so it lands in the correct position.
         _stream_pending_chat()
+        # Deferred tool work (batch verify / single verify / chart / …) runs
+        # here for the same reason: the user's bubble is already on screen,
+        # and the progress bar / spinner appears inline in the chat flow.
+        _run_pending_tool()
         # Spacer so the last message isn't hidden behind the fixed composer
         st.markdown('<div style="height:140px;"></div>', unsafe_allow_html=True)
 
