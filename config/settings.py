@@ -33,6 +33,8 @@ class Settings:
     deepseek_flash_model: str = os.getenv("DEEPSEEK_FLASH_MODEL", "deepseek-v4-flash")
 
     app_name: str = os.getenv("APP_NAME", "LitVerify AI")
+    # 每次发布部署时递增；显示在侧边栏底部，用于确认线上跑的是哪个版本。
+    app_build: str = "2026-07-08.5"
     # Files larger than this switch from pandas to the DuckDB streaming reader.
     duckdb_threshold_mb: int = int(os.getenv("DUCKDB_THRESHOLD_MB", "100"))
     crossref_email: str = os.getenv("CROSSREF_EMAIL", "")

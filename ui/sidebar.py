@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from config.settings import settings
 from ui.components import logo_data_uri
 from ui.settings_dialog import open_settings_dialog
 from utils.session import (
@@ -107,6 +108,8 @@ def render_sidebar() -> None:
                 <div class="dw-sidebar-status">
                     <span class="dw-sidebar-dot" style="background:{dot_color};"></span>
                     <span>{label}</span>
+                    <span style="margin-left:auto;opacity:0.55;font-size:0.72rem;">
+                        v{settings.app_build}</span>
                 </div>
                 """,
                 unsafe_allow_html=True,

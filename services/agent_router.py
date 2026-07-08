@@ -400,11 +400,16 @@ def _narrate_batch_results(
     name_col = next((c for c in _NAME_COLS if c in result_df.columns), None)
     problem_col = next((c for c in _PROBLEM_COLS if c in result_df.columns), None)
 
+    question = (user_text or "").strip()
+    # 用户带着具体问题上传时，逐条的问题明细是干扰源——上次线上实测模型
+    # 会被 20 条问题条目带偏、无视问题写全套报告。裁到 5 条给个印象即可。
+    problem_cap = 5 if question else 20
+
     problems: list[dict[str, Any]] = []
     if "verdict" in result_df.columns:
         flagged = result_df[result_df["verdict"].isin(["FAKE", "SUSPICIOUS", "ERROR"])]
         for pos, (_, row) in enumerate(flagged.iterrows()):
-            if pos >= 20:  # cap payload — narrate the rest as "等若干条"
+            if pos >= problem_cap:  # cap payload — narrate the rest as "等若干条"
                 break
             name = str(row.get(name_col, "") or "").strip() if name_col else ""
             problem = str(row.get(problem_col, "") or "").strip() if problem_col else ""
@@ -432,14 +437,24 @@ def _narrate_batch_results(
         "来源": source_label,
         "总数": int(len(result_df)),
         "统计": {str(k): int(v) for k, v in counts.items()},
-        "用户说明": (user_text or "").strip() or None,
+        "用户说明": question or None,
         "分组统计": group_stats,
         "问题条目": problems,
         "问题条目是否截断": bool(
             "verdict" in result_df.columns
-            and len(result_df[result_df["verdict"].isin(["FAKE", "SUSPICIOUS", "ERROR"])]) > 20
+            and len(result_df[result_df["verdict"].isin(["FAKE", "SUSPICIOUS", "ERROR"])]) > problem_cap
         ),
     }
+    # 把用户的问题作为消息结尾的显式指令（而不是只埋在 JSON 字段里）——
+    # 模型对提示词末尾的服从度最高，避免又被问题条目带偏写成全套报告。
+    user_content = json.dumps(payload, ensure_ascii=False, default=str)
+    if question:
+        user_content += (
+            f"\n\n【用户的问题】{question}\n"
+            "请先直接回答上面这个问题——用「分组统计」里的数据，条数/比例类"
+            "回答可用 Markdown 表格；然后最多用一两句话补充总体结论。"
+            "不要输出逐条的问题报告。"
+        )
     try:
         # 90s：思考型模型读完 200 条的分组统计再写总结，30s 在云端经常超时，
         # 一超时就静默回退成呆板的计数模板，用户的问题又没人答了。
@@ -447,7 +462,7 @@ def _narrate_batch_results(
         return client.chat(
             messages=[
                 {"role": "system", "content": BATCH_NARRATE_PROMPT},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.45,
             top_p=0.9,
