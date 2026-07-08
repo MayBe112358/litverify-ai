@@ -8,6 +8,8 @@ __pycache__/
 .playwright-cli/
 output/
 exports/
+.cache/
+data/
 packaging/windows/build/
 packaging/windows/dist/
 *.log

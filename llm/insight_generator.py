@@ -39,7 +39,8 @@ def explain_verification(report: VerificationReport) -> dict[str, Any]:
                 {"role": "user", "content": json.dumps(report.to_dict(), ensure_ascii=False, default=str)},
             ],
             temperature=0.2,
-            max_tokens=1500,
+            # 思考型模型的思考 token 也计入 max_tokens，预算需留足
+            max_tokens=2500,
             retries=0,
         )
         return json.loads(strip_fenced_block(raw, "json"))

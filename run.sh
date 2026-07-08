@@ -9,10 +9,13 @@ if [ -x ".venv/bin/python" ]; then
 elif [ -x ".venv/Scripts/python.exe" ]; then
     VENV_PY=".venv/Scripts/python.exe"
 else
-    echo "[LitVerify AI] .venv not found." >&2
-    echo "Run setup.sh once, or:" >&2
-    echo "    python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt" >&2
-    exit 1
+    echo "[LitVerify AI] .venv not found. Creating it now..."
+    ./setup.sh
+    if [ -x ".venv/bin/python" ]; then
+        VENV_PY=".venv/bin/python"
+    else
+        VENV_PY=".venv/Scripts/python.exe"
+    fi
 fi
 
 echo "[LitVerify AI] Starting Streamlit on http://localhost:${PORT} ..."

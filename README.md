@@ -26,6 +26,10 @@
 setup.bat   :: 创建 .venv 并安装依赖（仅需一次）
 ```
 
+> 安装脚本会自动探测本机的 Python（3.10–3.13 均可），并默认使用清华 PyPI 镜像
+> 加速下载（国内网络直连 pypi.org 常常超时卡死）。如需换回官方源或其他镜像，
+> 先设置环境变量 `PIP_INDEX_URL` 再运行脚本即可。
+
 ### macOS / Linux 或手动
 ```bash
 python -m venv .venv
@@ -89,6 +93,7 @@ run.bat
 ## 7. 运行测试
 
 ```bash
+.venv/bin/python -m pip install -r requirements-dev.txt   # 首次需安装开发依赖
 .venv/bin/python -m pytest          # 全部单元测试
 .venv/bin/python -m ruff check .    # 静态检查（可选）
 ```

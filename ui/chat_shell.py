@@ -663,12 +663,44 @@ def _composer() -> None:
         _clear_pending_files()
         st.rerun()
 
-    with st.spinner("🤖  正在理解你的需求…"):
-        assistant_msg = dispatch(mode, text, files, history)
+    if mode == "verify_batch":
+        # 200 条要跑几分钟，干转的 spinner 会让人以为应用卡死——批量验证
+        # 换成带条数和预计剩余时间的实时进度条。
+        assistant_msg = _dispatch_batch_with_progress(text, files, history)
+    else:
+        with st.spinner("🤖  正在理解你的需求…"):
+            assistant_msg = dispatch(mode, text, files, history)
     append_message(assistant_msg)
 
     _clear_pending_files()
     st.rerun()
+
+
+def _dispatch_batch_with_progress(
+    text: str,
+    files: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run batch verification with a live progress bar + ETA."""
+    import time
+
+    bar = st.progress(0.0, text="⏳ 正在读取文件并连接学术数据库…")
+    start = time.time()
+
+    def on_progress(done: int, total: int, _payload: dict) -> None:
+        frac = done / max(total, 1)
+        if done >= total:
+            bar.progress(1.0, text=f"✅ {total} 条核验完成，正在生成结果解读…")
+            return
+        elapsed = time.time() - start
+        eta = int(elapsed / done * (total - done)) if done else 0
+        eta_text = f"{eta // 60} 分 {eta % 60} 秒" if eta >= 60 else f"{eta} 秒"
+        bar.progress(frac, text=f"⏳ 正在核验引用 {done}/{total}，预计还需 {eta_text}")
+
+    try:
+        return dispatch("verify_batch", text, files, history, on_progress=on_progress)
+    finally:
+        bar.empty()
 
 
 # --------------------------------------------------------------------- #
@@ -713,11 +745,39 @@ def _stream_pending_chat() -> None:
     sess = active_session()
     history = sess["messages"][:-1]  # exclude the user turn we're answering
 
+    # Streamlit interrupts a running script by raising its control-flow
+    # exceptions (StopException / RerunException) from the next st.* call —
+    # e.g. when the user clicks anything mid-stream. Those derive from
+    # ``Exception``, so a bare ``except Exception`` used to swallow them:
+    # the script died silently before ``append_message`` ran and the whole
+    # reply vanished ("提问后一直没有回复"). We now persist whatever has
+    # streamed so far and re-raise so Streamlit keeps control.
+    try:
+        from streamlit.runtime.scriptrunner import RerunException, StopException
+        _INTERRUPTS: tuple[type[BaseException], ...] = (RerunException, StopException)
+    except Exception:  # noqa: BLE001 - private-ish import; fall back gracefully
+        _INTERRUPTS = ()
+
+    reasoning, answer = "", ""
+
+    def _persist(text_suffix: str = "") -> None:
+        text = (answer or "").strip()
+        if not text and not reasoning:
+            return
+        append_message(
+            {
+                "role": "assistant",
+                "kind": "chat",
+                "mode": "chat",
+                "text": (text or "（回复在生成途中被打断，请重新提问。）") + text_suffix,
+                "data": {"reasoning": reasoning} if reasoning else {},
+            }
+        )
+
     with st.chat_message("assistant"):
         think_box = st.empty()
         answer_box = st.empty()
         think_box.markdown(_thinking_html("正在思考…"), unsafe_allow_html=True)
-        reasoning, answer = "", ""
         try:
             for channel, delta in stream_chat(pending["text"], history, pending["files"]):
                 if channel == "reasoning":
@@ -730,6 +790,9 @@ def _stream_pending_chat() -> None:
                 else:
                     answer += delta
                     answer_box.markdown(answer + " ▌")
+        except _INTERRUPTS:
+            _persist(text_suffix="\n\n_（回复被打断，以上为已生成部分。）_" if answer else "")
+            raise
         except Exception as exc:  # noqa: BLE001 - backstop; stream_chat rarely raises
             answer = answer or f"AI 暂不可用：`{exc}`"
         # Collapse the thinking trace once the answer is in; keep it foldable.

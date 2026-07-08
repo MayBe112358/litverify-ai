@@ -17,8 +17,14 @@ SCHEMA_PATH = PROJECT_ROOT / "db" / "schema.sql"
 
 
 def db_path() -> Path:
-    """Return the configured history database path."""
+    """Return the configured history database path.
+
+    A relative ``HISTORY_DB_PATH``（.env 默认就是 data/…）用启动时的工作目录
+    解析会导致"从 run.bat 启动和从仓库根目录启动各写一个库"——统一锚定到
+    项目根目录。"""
     path = Path(settings.history_db_path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

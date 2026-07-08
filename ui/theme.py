@@ -11,6 +11,7 @@ keeps the toggle minimal.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -176,9 +177,21 @@ def _build_root_block(t: dict[str, str]) -> str:
 """
 
 
-def _build_css(t: dict[str, str]) -> str:
-    """Build the full stylesheet — :root vars + the static theme.css body."""
-    return _build_root_block(t) + "\n" + _CSS_PATH.read_text(encoding="utf-8")
+@lru_cache(maxsize=8)
+def _build_css_cached(name: str) -> str:
+    """Build the final stylesheet for a theme — :root vars + theme.css body,
+    with the logo URI substituted. Cached per theme name: Streamlit reruns the
+    whole script on every interaction, and re-reading theme.css from disk each
+    time is wasted work. (Editing theme.css therefore needs an app restart.)"""
+    t = get_theme(name)
+    css = _build_root_block(t) + "\n" + _CSS_PATH.read_text(encoding="utf-8")
+    # Logo data URI feeds the collapsed-state sidebar-expand button skin;
+    # fall back to a 1px transparent gif so the CSS rule remains valid.
+    logo_uri = logo_data_uri() or (
+        "data:image/gif;base64,"
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    )
+    return css.replace("__LOGO_URI__", logo_uri)
 
 
 _THEME_MARKER_JS = """
@@ -196,18 +209,9 @@ _THEME_MARKER_JS = """
 def apply_theme(name: str | None = None) -> None:
     """Inject the active theme's CSS + matching Plotly template."""
     active = name or current_theme_name()
-    theme = get_theme(active)
     pio.templates.default = f"litverify_{active}"
 
-    css = _build_css(theme)
-    # Inject the logo data URI into the CSS for the collapsed-state
-    # sidebar-expand button skin. If no logo file is found, fall back
-    # to a 1px transparent gif so the rule remains valid.
-    logo_uri = logo_data_uri() or (
-        "data:image/gif;base64,"
-        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
-    )
-    css = css.replace("__LOGO_URI__", logo_uri)
+    css = _build_css_cached(active)
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
     marker = "dark" if active == "深色" else "light"

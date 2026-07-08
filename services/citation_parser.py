@@ -269,7 +269,8 @@ class CitationParser:
                     {"role": "user", "content": text},
                 ],
                 temperature=0.0,
-                max_tokens=1200,
+                # 思考型模型的思考 token 也计入 max_tokens，预算需留足
+                max_tokens=2200,
                 retries=0,
             )
             data: dict[str, Any] = json.loads(strip_fenced_block(raw, "json"))

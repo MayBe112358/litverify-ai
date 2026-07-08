@@ -32,6 +32,5 @@ reportlab>=4.2.0
 # Config
 python-dotenv>=1.0.1
 
-# Tests & static checks (dev)
-pytest>=8.0.0
-ruff>=0.6.0
+# Dev tools (pytest/ruff) live in requirements-dev.txt so cloud deploys and
+# Docker images stay lean.

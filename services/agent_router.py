@@ -25,6 +25,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from config.prompts import BATCH_NARRATE_PROMPT, CHART_CODE_PROMPT, CHAT_SYSTEM_PROMPT
+from config.settings import settings
 from db.history import list_history, history_summary
 from llm.deepseek_client import DeepSeekClient, runtime_api_key
 from llm.text_utils import strip_fenced_block
@@ -128,13 +129,17 @@ def _classify_text_intent_llm(text: str, history: list[dict[str, Any]]) -> str |
     )
     try:
         client = DeepSeekClient(timeout=15)
+        # deepseek-v4 系列是推理模型：思考 token 也计入 max_tokens，且思考先于
+        # 正文输出。预算给太小（此前是 8）会被思考全部吃光，content 恒为空、
+        # 分类器永远失效。这里用 Flash（更快更便宜）并留足思考余量。
         raw = client.chat(
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": msg},
             ],
+            model=settings.deepseek_flash_model,
             temperature=0.0,
-            max_tokens=8,
+            max_tokens=512,
             retries=0,
         )
     except Exception:  # noqa: BLE001 - any failure → heuristic fallback
@@ -250,12 +255,17 @@ def dispatch(
     text: str,
     files: list[dict[str, Any]] | None = None,
     history: list[dict[str, Any]] | None = None,
+    on_progress: Any = None,
 ) -> dict[str, Any]:
     """Run the right service for ``mode``.
 
     ``files`` is a list of {"name": str, "bytes": bytes} — the chat shell
     materialises ``UploadedFile`` into bytes before storing them in
     session history so this function is pure.
+
+    ``on_progress`` is an optional ``(done, total, payload) -> None``
+    callback，目前只有批量验证会用它（在 UI 上画进度条——200 条要跑几分钟，
+    没有进度反馈时用户会以为应用卡死）。
     """
     files = files or []
     history = history or []
@@ -263,7 +273,7 @@ def dispatch(
         if mode == "verify_single":
             return _run_verify_single(text, files)
         if mode == "verify_batch":
-            return _run_verify_batch(text, files)
+            return _run_verify_batch(text, files, on_progress=on_progress)
         if mode == "fake_analysis":
             return _run_fake_analysis(files, history)
         if mode == "chart":
@@ -301,7 +311,11 @@ def _run_verify_single(text: str, files: list[dict[str, Any]]) -> dict[str, Any]
 # --------------------------------------------------------------------- #
 # verify_batch
 # --------------------------------------------------------------------- #
-def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_verify_batch(
+    text: str,
+    files: list[dict[str, Any]],
+    on_progress: Any = None,
+) -> dict[str, Any]:
     if not files:
         return _error("请上传 CSV / TSV / Excel 引用清单后再点发送。", "verify_batch")
 
@@ -313,7 +327,9 @@ def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
 
     structured = _detect_structured_columns(df)
     if structured:
-        result_df = batch_verify_structured(df, structured, max_workers=8)
+        result_df = batch_verify_structured(
+            df, structured, max_workers=8, on_progress=on_progress
+        )
         detected = "、".join(f"{role}=`{col}`" for role, col in structured.items())
         source_label = f"结构化列：{detected}"
     else:
@@ -324,7 +340,7 @@ def _run_verify_batch(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
                 "请在对话框补充列名提示，例如：「列名 citation_text」。",
                 "verify_batch",
             )
-        result_df = batch_verify(df, citation_col=column, max_workers=8)
+        result_df = batch_verify(df, citation_col=column, max_workers=8, on_progress=on_progress)
         source_label = f"列：`{column}`"
 
     counts = result_df["verdict"].value_counts().to_dict() if "verdict" in result_df.columns else {}
@@ -416,7 +432,8 @@ def _narrate_batch_results(
             ],
             temperature=0.45,
             top_p=0.9,
-            max_tokens=1600,
+            # 推理模型的思考也占 max_tokens，预算需覆盖 思考+正文
+            max_tokens=3000,
             retries=0,
         ).strip() or None
     except Exception:  # noqa: BLE001 - any failure → deterministic fallback
@@ -611,7 +628,8 @@ def _chart_from_llm_code(text: str, df: pd.DataFrame) -> tuple[Any, str] | None:
     for _ in range(_CHART_CODE_ATTEMPTS):
         try:
             client = DeepSeekClient(timeout=45)
-            raw = client.chat(messages=messages, temperature=0.2, max_tokens=1000, retries=0)
+            # 思考型模型：1000 会被思考吃掉大半、代码被截断，预算放宽
+            raw = client.chat(messages=messages, temperature=0.2, max_tokens=2600, retries=0)
         except Exception:  # noqa: BLE001 - model unavailable → heuristic fallback
             return None
         code = strip_fenced_block(raw, "python")
@@ -711,7 +729,7 @@ def _heuristic_chart_spec(df: pd.DataFrame) -> dict[str, Any] | None:
 # --------------------------------------------------------------------- #
 # ocr
 # --------------------------------------------------------------------- #
-def _run_ocr(text: str, files: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_ocr(_text: str, _files: list[dict[str, Any]]) -> dict[str, Any]:
     return _error(
         "当前 DeepSeek 调用只接收文本化数据，不能直接读取截图或文件。"
         "请先用本地 OCR 工具把截图中的参考文献转成文本，粘贴到对话框后我再核验。",
@@ -823,8 +841,10 @@ def stream_chat(
         # so the slow first token no longer trips "Request timed out".
         client = DeepSeekClient(timeout=120)
         produced_answer = False
+        # max_tokens 同时约束「思考 + 正文」：给 1800 时长答案会在句中被硬
+        # 截断，思考较长时正文甚至完全为空（表现为"没有返回内容"）。
         for channel, delta in client.chat_stream(
-            messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800
+            messages=messages, temperature=0.65, top_p=0.9, max_tokens=6000
         ):
             if channel == "answer":
                 produced_answer = True
@@ -861,7 +881,7 @@ def _run_chat(
     try:
         client = DeepSeekClient(timeout=60)
         answer = client.chat(
-            messages=messages, temperature=0.65, top_p=0.9, max_tokens=1800, retries=0
+            messages=messages, temperature=0.65, top_p=0.9, max_tokens=6000, retries=0
         )
     except Exception as exc:  # noqa: BLE001
         hint = (
