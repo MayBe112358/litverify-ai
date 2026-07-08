@@ -407,13 +407,24 @@ html[data-dw-file-drag="1"] [data-baseweb="tooltip"] {
     min-height: 42px;
     padding: 0 1.05rem;
     border-radius: 999px;
-    background: var(--dw-surface);
-    border: 1px solid var(--dw-border-strong);
+    background: rgba(255, 255, 255, 0.45);
+    backdrop-filter: blur(18px) saturate(1.6);
+    -webkit-backdrop-filter: blur(18px) saturate(1.6);
+    border: 1px solid rgba(255, 255, 255, 0.65);
     color: var(--dw-text);
     -webkit-text-fill-color: var(--dw-text);
     font-size: 0.95rem;
     font-weight: 600;
-    box-shadow: var(--dw-shadow-sm);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.70),
+        0 8px 24px rgba(15, 23, 42, 0.12);
+}
+html[data-dw-theme="dark"] .dw-drop-card {
+    background: rgba(38, 40, 46, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.10),
+        0 8px 24px rgba(0, 0, 0, 0.50);
 }
 [class*="st-key-home_drop_upload"] > div,
 [class*="st-key-home_drop_upload"] [data-testid="stFileUploader"],
@@ -692,12 +703,33 @@ html[data-dw-empty="1"] [data-testid="stMainBlockContainer"]
     pointer-events: none;
 }
 .dw-welcome-brand {
-    font-size: 1rem;
+    /* Liquid-glass badge under the logo */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.32rem 1.0rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.35);
+    backdrop-filter: blur(16px) saturate(1.6);
+    -webkit-backdrop-filter: blur(16px) saturate(1.6);
+    border: 1px solid rgba(255, 255, 255, 0.60);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.65),
+        0 4px 14px rgba(15, 23, 42, 0.08);
+    font-size: 0.92rem;
     font-weight: 700;
     letter-spacing: 0.22em;
     color: var(--dw-text-soft);
     text-align: center;
     margin: 0 auto 1.5rem;
+    width: fit-content;
+}
+html[data-dw-theme="dark"] .dw-welcome-brand {
+    background: rgba(38, 40, 46, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.10),
+        0 4px 14px rgba(0, 0, 0, 0.40);
 }
 @keyframes dw-logo-float {
     0%, 100% { transform: translateY(0); }
@@ -843,11 +875,11 @@ html[data-dw-empty="1"] [data-testid="stMainBlockContainer"]
     align-items: stretch !important;
     min-height: 100vh !important;
     gap: 0 !important;
-    /* Padding-top compensates for the cumulative top-offset created
-       by Streamlit's invisible header + main padding; with this the
-       visible content midpoint matches viewport midpoint. */
-    padding-top: 30px !important;
-    padding-bottom: 0 !important;
+    /* Bottom padding pulls the flex-centred content ABOVE the exact
+       midpoint: the invisible header eats ~60px at the top, and a
+       block sitting at the true middle reads visually low anyway. */
+    padding-top: 0 !important;
+    padding-bottom: 12vh !important;
     box-sizing: border-box !important;
 }
 /* Hide Streamlit's bottom dock entirely in empty state — composer
@@ -857,48 +889,54 @@ html[data-dw-empty="1"] [data-testid="stBottom"] {
 }
 
 /* =========== Composer shell (the pill that holds + popover + input) ===========
-   Style hook: st.container(key="composer_shell"). Clean single pill,
-   no border — depth comes from a soft shadow. */
+   Style hook: st.container(key="composer_shell"). Liquid-glass pill:
+   translucent surface, heavy backdrop blur + saturation so the fluid
+   gradient shines through, hairline light border and an inner top
+   highlight for the "wet glass" specular edge. */
 [class*="st-key-composer_shell"] {
     /* relative + z-index lift the pill above the aurora backdrop in the
        empty state; the conversation-state rule overrides to fixed/50. */
     position: relative;
     z-index: 1;
-    background: var(--dw-composer-bg) !important;
-    border: 0 !important;
+    background: rgba(255, 255, 255, 0.40) !important;
+    backdrop-filter: blur(24px) saturate(1.7);
+    -webkit-backdrop-filter: blur(24px) saturate(1.7);
+    border: 1px solid rgba(255, 255, 255, 0.65) !important;
     border-radius: 28px !important;
     padding: 0.45rem 0.5rem !important;
-    /* Light-mode shadow: layered + soft, mirrors the dark-mode look
-       so the pill always feels lifted off the canvas */
     box-shadow:
-        0 1px 3px rgba(15, 23, 42, 0.08),
-        0 8px 24px rgba(15, 23, 42, 0.10),
-        0 2px 6px rgba(15, 23, 42, 0.06) !important;
+        inset 0 1px 0 rgba(255, 255, 255, 0.75),
+        0 1px 3px rgba(15, 23, 42, 0.06),
+        0 12px 32px rgba(15, 23, 42, 0.12) !important;
     max-width: 720px !important;
     width: 100% !important;
     margin-left: auto !important;
     margin-right: auto !important;
     align-self: center !important;
-    transition: box-shadow var(--dw-trans);
+    transition: box-shadow var(--dw-trans), background var(--dw-trans);
 }
 [class*="st-key-composer_shell"]:focus-within {
+    background: rgba(255, 255, 255, 0.52) !important;
     box-shadow:
-        0 1px 3px rgba(15, 23, 42, 0.10),
-        0 10px 28px rgba(15, 23, 42, 0.14),
-        0 4px 10px rgba(15, 23, 42, 0.08) !important;
+        inset 0 1px 0 rgba(255, 255, 255, 0.85),
+        0 1px 3px rgba(15, 23, 42, 0.08),
+        0 14px 38px rgba(15, 23, 42, 0.16) !important;
 }
-/* Dark mode keeps an even stronger lift since the canvas is darker */
+/* Dark glass: deeper tint, faint light rim so the edge still reads */
 html[data-dw-theme="dark"] [class*="st-key-composer_shell"] {
+    background: rgba(38, 40, 46, 0.45) !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
     box-shadow:
-        0 1px 3px rgba(0, 0, 0, 0.45),
-        0 10px 28px rgba(0, 0, 0, 0.55),
-        0 4px 10px rgba(0, 0, 0, 0.40) !important;
+        inset 0 1px 0 rgba(255, 255, 255, 0.10),
+        0 1px 3px rgba(0, 0, 0, 0.40),
+        0 12px 32px rgba(0, 0, 0, 0.55) !important;
 }
 html[data-dw-theme="dark"] [class*="st-key-composer_shell"]:focus-within {
+    background: rgba(44, 46, 53, 0.58) !important;
     box-shadow:
-        0 1px 3px rgba(0, 0, 0, 0.50),
-        0 12px 32px rgba(0, 0, 0, 0.65),
-        0 4px 12px rgba(0, 0, 0, 0.45) !important;
+        inset 0 1px 0 rgba(255, 255, 255, 0.14),
+        0 1px 3px rgba(0, 0, 0, 0.45),
+        0 14px 38px rgba(0, 0, 0, 0.65) !important;
 }
 /* Flatten every wrapper inside the shell — no double pills/borders/bgs.
    Aggressive selectors (background + background-color + background-image)
@@ -1008,9 +1046,12 @@ html[data-dw-empty="0"]:has([data-testid="stSidebar"][aria-expanded="true"])
     min-height: 36px !important;
     padding: 0 !important;
     margin: 0 !important;
-    border: 0 !important;
+    /* Glass button inside the glass shell: translucent tint + hairline
+       only — the parent pill already supplies the backdrop blur. */
+    border: 1px solid rgba(255, 255, 255, 0.55) !important;
     border-radius: 999px !important;
-    background: var(--dw-chip-bg) !important;
+    background: rgba(255, 255, 255, 0.35) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -1018,7 +1059,17 @@ html[data-dw-empty="0"]:has([data-testid="stSidebar"][aria-expanded="true"])
     transition: all var(--dw-trans);
 }
 [class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"]:hover {
-    background: var(--dw-surface-alt) !important;
+    background: rgba(255, 255, 255, 0.60) !important;
+}
+html[data-dw-theme="dark"] [class*="st-key-composer_plus"]
+    [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+html[data-dw-theme="dark"] [class*="st-key-composer_plus"]
+    [data-testid="stFileUploaderDropzone"]:hover {
+    background: rgba(255, 255, 255, 0.16) !important;
 }
 [class*="st-key-composer_plus"] [data-testid="stFileUploaderDropzone"]::before {
     content: "＋";
@@ -1154,8 +1205,15 @@ body > div[data-baseweb="tooltip"] > div {
     flex-wrap: nowrap !important;
     gap: 0 !important;
     border-radius: 999px !important;
-    background: var(--dw-chip-bg) !important;
+    /* Glass chip: sits inside the glass shell, so tint + hairline only */
+    background: rgba(255, 255, 255, 0.35) !important;
+    border: 1px solid rgba(255, 255, 255, 0.50) !important;
     overflow: hidden !important;
+}
+html[data-dw-theme="dark"] [class*="st-key-stage_chip_"] > div,
+html[data-dw-theme="dark"] [class*="st-key-stage_chip_"] [data-testid="stVerticalBlock"] {
+    background: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
 }
 [class*="st-key-stage_chip_"]:has(.dw-stage-chip-mode) > div,
 [class*="st-key-stage_chip_"]:has(.dw-stage-chip-mode) [data-testid="stVerticalBlock"] {
