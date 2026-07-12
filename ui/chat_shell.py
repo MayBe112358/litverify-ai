@@ -91,10 +91,7 @@ def _welcome_logo_html() -> str:
     uri = logo_data_uri()
     if not uri:
         return ""
-    return (
-        f'<img class="dw-welcome-logo" src="{uri}" alt="GG Bond" />'
-        '<div class="dw-welcome-brand">GG Bond</div>'
-    )
+    return f'<img class="dw-welcome-logo" src="{uri}" alt="logo" />'
 
 
 # --------------------------------------------------------------------- #
