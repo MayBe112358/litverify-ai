@@ -1,5 +1,8 @@
 # Core UI + data stack
-streamlit>=1.43.0,<2.0  # need st.dialog + st.chat_input(accept_file=...)
+streamlit>=1.43.0,!=1.59.1,<2.0  # need st.dialog + st.chat_input(accept_file=...)
+# 1.59.1 (released 2026-07-08) has a crash bug that takes the whole app down
+# on Community Cloud (see discuss.streamlit.io topic 121922); resolves to
+# 1.59.0 until a fixed release ships.
 pandas>=2.2.0,<3.0
 # Streamlit Cloud ships pip 24.0, which cannot parse Metadata-2.4 wheels and
 # silently discards every tzdata 2025.x candidate, making pandas' transitive
